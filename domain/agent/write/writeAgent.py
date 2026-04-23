@@ -9,20 +9,18 @@ from domain.tool import Tool
 
 
 class WriteAgent(AgentBase):
-    def __init__(self,id,name,llm,memory) -> None:
-        super().__init__(id,name,llm,memory)
+    def __init__(self,id,name,llm,memory,context) -> None:
+        super().__init__(id,name,llm,memory,context)
         self.states["write_agent"] = {
             "score":    1.0,
             "feedback": "",
             "passed":   True,
         }
-        self.avilable_tools.append("write_agent")
-      
+        
     # 单步推理
     async def _step(self) -> None:
         return await super()._step()
         
-    
     # prompt构造
     # 单次对话
     def _build_agent_prompt(self) -> str:
@@ -66,16 +64,6 @@ class WriteAgent(AgentBase):
 }}
 """        
 
-    def _build_user_message(self) -> str:
-        print(self.states["prompt"])
-        return super()._build_user_message()
-    def _build_state_summary(self) -> str:
-        return super()._build_state_summary()
-
-    # 多轮会话
-    def _build_mutil_user_message(self) -> str:
-        return super()._build_mutil_user_message()
-    # 工具调用返回
 
 
 

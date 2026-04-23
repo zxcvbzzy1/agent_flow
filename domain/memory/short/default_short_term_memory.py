@@ -19,32 +19,28 @@ class DefaultShortTermMemory(ShortTermMemory):
     - 摘要：通过注入的 summarize_fn（LLM 总结），短文本直接格式化
     """
 
-    def __init__(self, summarize_fn: SummarizeFn | None = None):
-        self._store:       dict[str, list[str]] = {}  # 原文
-        self._summary:     list[dict] = []            # 摘要列表，顺序与调用顺序一致
-        self._round_cache: dict[str, str] = {}        # 本轮缓存
-        self._summarize_fn = summarize_fn              # LLM 总结函数（由 infra 层注入）
+    def __init__(self, summarize_fn=None):
+        self._store:       dict[str, list[str]] = {}
+        self._summary:     list[dict] = []        # {"tool_name", "summary", "index"}
+        self._round_cache: dict[str, str] = {}
+        self._summarize_fn = summarize_fn
 
-    # ── 存 ────────────────────────────────────────────────────────
-
-    async def store(self, tool_name: str, raw: str, callBack) -> int:
+    async def store(self, tool_name: str, raw: str, callback=None) -> int:
         if not isinstance(raw, str):
             raw = json.dumps(raw, ensure_ascii=False)
         self.store_round(tool_name, raw)
         self._store.setdefault(tool_name, []).append(raw)
         call_index = len(self._store[tool_name])
-        if callBack is None:
-            summary = await self._make_summary(tool_name, raw, call_index)
-            self._summary.append({
-                "tool_name": tool_name,
-                "respond":   summary,
-            })
-        else:
-            self._summary.append({
-                "tool_name": tool_name,
-                "respond":   callBack(),
-            })
+
+        summary = callback() if callback else await self._make_summary(tool_name, raw, call_index)
+        # ✅ 只存数据，不管格式
+        self._summary.append({
+            "tool_name": tool_name,
+            "summary":   summary,
+            "index":     call_index,
+        })
         return call_index
+
 
     async def _make_summary(self, tool_name: str, raw: str, call_index: int) -> str:
         if len(raw) > MAX_LEN and self._summarize_fn is not None:
@@ -70,22 +66,8 @@ class DefaultShortTermMemory(ShortTermMemory):
             return history[index - 1]
         return None
 
-    # ── 呈现给 LLM ────────────────────────────────────────────────
-
-    def to_prompt(self) -> str:
-        if not self._summary:
-            return ""
-        parts = [f"- 工具反馈（共 {len(self._summary)} 条）："]
-        for i, item in enumerate(self._summary):
-            is_recent = i >= len(self._summary) - RECENT_COUNT
-            if is_recent:
-                parts.append(f"  [{item['tool_name']}] {item['respond']}")
-            else:
-                parts.append(
-                    f"  [{item['tool_name']}] (已折叠，"
-                    f"可调用 query_tool_respond(tool_name='{item['tool_name']}') 查看)"
-                )
-        return "\n".join(parts)
+    def get_summary_list(self) -> list[dict]:
+        return list(self._summary)   # 返回副本，外部不能直接改
 
     # ── 轮次缓存 ──────────────────────────────────────────────────
 
