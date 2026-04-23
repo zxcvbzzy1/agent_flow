@@ -1,6 +1,8 @@
 import os
 
 from domain.agent_base import AgentBase
+from domain.context.context import ContextEngine
+from domain.context.providers import *
 from domain.event import ToolEventFactory
 from domain.memory.short.default_short_term_memory import DefaultShortTermMemory
 from infra.LLM.LLM_infra import LLM_Client, LLM_Model_Provider
@@ -56,3 +58,13 @@ async def llm_summarize(tool_name: str, raw: str, call_index: int) -> str:
 # ── 带摘要能力的 Memory 实例 ─────────────────────────────────────
 
 memory = DefaultShortTermMemory(summarize_fn=llm_summarize)
+# 上下文管理
+ctx_engine = ContextEngine(providers=[
+    AvailableToolsProvider(avilable_fields=["system", "memory", "write_agent"]),
+    StateProvider(),
+    RefHintProvider(memory),
+    ToolRespondProvider(memory),
+    HistoryProvider(),
+    UserPromptProvider(),
+]   
+)
