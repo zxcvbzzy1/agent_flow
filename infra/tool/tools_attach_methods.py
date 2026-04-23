@@ -54,7 +54,7 @@ async def on_query_tool_respond_tool_successed(**kwargs):
     agent_id = kwargs.get("agent_id")
     agent:AgentBase = agent_dict.get(agent_id)
     full_respond = kwargs.get("respond")
-    def callBack(respond,s) -> str:
+    def callBack() -> str:
         summary = f"{full_respond}" 
         return summary           
     await agent.on_tool_call(
@@ -316,36 +316,20 @@ async def query_tool_respond(**kwargs):
         )
         return factory.tool("query_tool_respond").failed(respond)
 
-    full_store = agent.states.get("tool_respond_full", {})
-    history = full_store.get(tool_name)
+    result = agent.memory.get(tool_name, index)
 
-    if not history:
+    if result is None:
         respond = Tool_respond(
             name="query_tool_respond", agent_id=agent_id,
             success=False,
-            respond=f"未找到工具 '{tool_name}' 的历史记录，已调用的工具：{list(full_store.keys())}"
+            respond=f"未找到 '{tool_name}'，"
+                    f"已存工具：{agent.memory.all_keys()}"
         )
         return factory.tool("query_tool_respond").failed(respond)
 
-    # index 不填返回最后一次
-    if index is None:
-        result = history[-1]
-        desc = f"工具 '{tool_name}' 最后一次调用结果"
-    else:
-        if index < 1 or index > len(history):
-            respond = Tool_respond(
-                name="query_tool_respond", agent_id=agent_id,
-                success=False,
-                respond=f"index 超出范围，'{tool_name}' 共调用了 {len(history)} 次"
-            )
-            return factory.tool("query_tool_respond").failed(respond)
-        result = history[index - 1]
-        desc = f"工具 '{tool_name}' 第 {index} 次调用结果"
-
     respond = Tool_respond(
         name="query_tool_respond", agent_id=agent_id,
-        success=True,
-        respond=f"{desc}：\n{result}"
+        success=True, respond=result
     )
     return factory.tool("query_tool_respond").succeeded(respond)
 
@@ -469,7 +453,7 @@ async def outline_generation(**kwargs) -> Event:
 
 
 @on_tool.on(factory.tool("draft_writing").called())
-async def first_draft_writing(**kwargs) -> Event:
+async def draft_writing(**kwargs) -> Event:
     """
     根据要求，生成初稿文本
     """
@@ -481,11 +465,11 @@ async def first_draft_writing(**kwargs) -> Event:
         if not requirements:
             respond = Tool_respond(
                 agent_id=agent_id,
-                name="first_draft_writing",
+                name="draft_writing",
                 success=False,
                 respond="错误：未提供写作要求"
             )
-            return factory.tool("first_draft_writing").failed(respond)
+            return factory.tool("draft_writing").failed(respond)
         
         system_prompt = """你是一个专业的小说作家。
 你的任务是根据要求创作高质量的文本。
@@ -505,21 +489,21 @@ async def first_draft_writing(**kwargs) -> Event:
         
         respond = Tool_respond(
             agent_id=agent_id,
-            name="first_draft_writing",
+            name="draft_writing",
             success=True,
             respond=result,
         )
-        return factory.tool("first_draft_writing").succeeded(respond)
+        return factory.tool("draft_writing").succeeded(respond)
         
     except Exception as e:
         agent_id = kwargs.get("agent_id", "")
         respond = Tool_respond(
             agent_id=agent_id,
-            name="first_draft_writing",
+            name="draft_writing",
             success=False,
             respond=f"初稿写作失败: {str(e)}"
         )
-        return factory.tool("first_draft_writing").failed(respond)
+        return factory.tool("draft_writing").failed(respond)
 
 
 @on_tool.on(factory.tool("rewrite").called())

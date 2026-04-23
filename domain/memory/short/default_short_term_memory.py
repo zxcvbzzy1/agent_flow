@@ -1,10 +1,14 @@
 # domain/memory/default_short_term_memory.py
 
 import json
-from domain.memory.short_term_memory import ShortTermMemory
+from typing import Callable, Awaitable
+from domain.memory.short.short_term_memory import ShortTermMemory
 
 MAX_LEN      = 700
 RECENT_COUNT = 5
+
+# summarize_fn: 接收 (tool_name, raw, call_index)，返回摘要字符串
+SummarizeFn = Callable[[str, str, int], Awaitable[str]]
 
 
 class DefaultShortTermMemory(ShortTermMemory):
@@ -12,29 +16,40 @@ class DefaultShortTermMemory(ShortTermMemory):
     默认实现：
     - 存：内存字典保存原文
     - 呈现：最近 N 条完整展示，较早的折叠
-    - 摘要：超过 MAX_LEN 截断并提示可查询
+    - 摘要：通过注入的 summarize_fn（LLM 总结），短文本直接格式化
     """
 
-    def __init__(self):
-        self._store:   dict[str, list[str]] = {}  # 原文
-        self._summary: list[dict] = []            # 摘要列表，顺序与调用顺序一致
+    def __init__(self, summarize_fn: SummarizeFn | None = None):
+        self._store:       dict[str, list[str]] = {}  # 原文
+        self._summary:     list[dict] = []            # 摘要列表，顺序与调用顺序一致
+        self._round_cache: dict[str, str] = {}        # 本轮缓存
+        self._summarize_fn = summarize_fn              # LLM 总结函数（由 infra 层注入）
 
     # ── 存 ────────────────────────────────────────────────────────
 
-    def store(self, tool_name: str, raw: str) -> int:
+    async def store(self, tool_name: str, raw: str, callBack) -> int:
         if not isinstance(raw, str):
             raw = json.dumps(raw, ensure_ascii=False)
-
+        self.store_round(tool_name, raw)
         self._store.setdefault(tool_name, []).append(raw)
         call_index = len(self._store[tool_name])
-
-        self._summary.append({
-            "tool_name": tool_name,
-            "respond":   self._make_summary(tool_name, raw, call_index),
-        })
+        if callBack is None:
+            summary = await self._make_summary(tool_name, raw, call_index)
+            self._summary.append({
+                "tool_name": tool_name,
+                "respond":   summary,
+            })
+        else:
+            self._summary.append({
+                "tool_name": tool_name,
+                "respond":   callBack(),
+            })
         return call_index
 
-    def _make_summary(self, tool_name: str, raw: str, call_index: int) -> str:
+    async def _make_summary(self, tool_name: str, raw: str, call_index: int) -> str:
+        if len(raw) > MAX_LEN and self._summarize_fn is not None:
+            llm_summary = await self._summarize_fn(tool_name, raw, call_index)
+            return f"[{tool_name} 第{call_index}次] {llm_summary} (可用 query_tool_respond 查询完整内容)"
         if len(raw) > MAX_LEN:
             return (
                 f"[{tool_name} 第{call_index}次] "
@@ -72,6 +87,17 @@ class DefaultShortTermMemory(ShortTermMemory):
                 )
         return "\n".join(parts)
 
+    # ── 轮次缓存 ──────────────────────────────────────────────────
+
+    def begin_round(self) -> None:
+        self._round_cache.clear()
+
+    def store_round(self, tool_name: str, raw: str) -> None:
+        self._round_cache[tool_name] = raw
+
+    def get_round(self, tool_name: str) -> str | None:
+        return self._round_cache.get(tool_name)
+
     # ── 其他 ──────────────────────────────────────────────────────
 
     def all_keys(self) -> list[str]:
@@ -83,3 +109,4 @@ class DefaultShortTermMemory(ShortTermMemory):
     def clear(self) -> None:
         self._store.clear()
         self._summary.clear()
+        self._round_cache.clear()
