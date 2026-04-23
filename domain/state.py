@@ -13,8 +13,6 @@ class Agent_state():
             "history":       [],
             # tool memory
             "tool_history":  [],   # list[str] 执行过的工具名
-            "tool_respond":  [],   # list[str] 执行过的工具的反馈摘要
-            "tool_respond_full": {},     # 原文，key=tool_name，value=list（支持多次调用）
             "last_tool_ok": True,
             "tool_retry":     0,   
             # 控制

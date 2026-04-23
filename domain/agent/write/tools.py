@@ -35,7 +35,7 @@ OUTLINE_GENERATION = Tool(
         "properties": {
             "requirements": {
                 "type": "string",
-                "description": "用户需求"
+                "description": "为requirements_analysis的返回值"
             },
             "chapter_count": {
                 "type": "integer",
