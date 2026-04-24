@@ -1,13 +1,21 @@
-# domain/memory/short/short_term_memory.py
+"""
+ShortTermMemory 抽象接口。
+负责存储工具的原始输出，供 AgentBase.on_tool_call() 写入，
+以及 ContextStore 通过 write() 消费。
 
+与 ContextStore 的分工
+----------------------
+ShortTermMemory  ——  存工具原始输出（原文，不截断）
+ContextStore     ——  管理哪些内容进入 LLM 上下文窗口（promoted window）
+"""
 from abc import ABC, abstractmethod
 
 
 class ShortTermMemory(ABC):
 
     @abstractmethod
-    async def store(self, tool_name: str, raw: str, callback) -> int:
-        """存入工具原始输出，返回第几次调用（从1开始）。"""
+    async def store(self, tool_name: str, raw: str, callback=None) -> int:
+        """存入工具原始输出，返回第几次调用（从 1 开始）。"""
         ...
 
     @abstractmethod
@@ -18,9 +26,8 @@ class ShortTermMemory(ABC):
     @abstractmethod
     def get_summary_list(self) -> list[dict]:
         """
-        返回所有摘要条目，供 ContextProvider 格式化。
+        返回所有摘要条目，供需要时使用。
         每条格式：{"tool_name": str, "summary": str, "index": int}
-        不包含呈现逻辑，只暴露数据。
         """
         ...
 

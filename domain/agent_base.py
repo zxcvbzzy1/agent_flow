@@ -163,12 +163,18 @@ class AgentBase(ABC):
         tool_name: str,
         success:   bool,
         respond:   str,
-        callback=  None,
     ) -> None:
         s = self.states
         if success:
             try:
-                await self.memory.store(tool_name, respond, callback)
+                self.memory.store(tool_name, respond)
+                source_key = f"tool:{tool_name}#{self.memory.count(tool_name)}"
+                await self.context_engine.get_store().write(
+                        source_key=source_key,
+                        raw=respond,
+                        scope="memory",
+                        metadata={"tool_name": tool_name},
+                    )
                 s["tool_history"].append(tool_name)
                 s["last_tool_ok"] = True
                 s["retry"]        = 0
