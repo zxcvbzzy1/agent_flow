@@ -123,26 +123,25 @@ RAG_SEARCH = Tool(
 
 # 记忆
 
-QUERY_TOOL_RESPOND = Tool(
-    name="query_tool_respond",
-    description="查询本次任务中历史工具调用的完整反馈内容。当需要回溯某个工具的执行结果时，或者查看被截断的工具执行结果时使用。",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "tool_name": {
-                "type": "string",
-                "description": "要查询的工具名称"
-            },
-            "index": {
-                "type": "integer",
-                "description": "第几次调用的结果，从1开始，不填则返回最后一次",
-            }
-        },
-        "required": ["tool_name","index"]
-    },
-    field="memory"
-)
-
+# QUERY_TOOL_RESPOND = Tool(
+#     name="query_tool_respond",
+#     description="查询本次任务中历史工具调用的完整反馈内容。当需要回溯某个工具的执行结果时，或者查看被截断的工具执行结果时使用。",
+#     input_schema={
+#         "type": "object",
+#         "properties": {
+#             "tool_name": {
+#                 "type": "string",
+#                 "description": "要查询的工具名称"
+#             },
+#             "index": {
+#                 "type": "integer",
+#                 "description": "第几次调用的结果，从1开始，不填则返回最后一次",
+#             }
+#         },
+#         "required": ["tool_name","index"]
+#     },
+#     field="memory"
+# )
 
 
 # MEMORY_QUERY = Tool(

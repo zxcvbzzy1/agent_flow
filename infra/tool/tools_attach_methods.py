@@ -49,20 +49,20 @@ async def on_tool_fail(**kwargs):  # event.playload为Tool_respond类，kwargs�
         respond=kwargs.get("respond"),
     )
 
-@on_tool.on(factory.tool("query_tool_respond").succeeded({}))
-async def on_query_tool_respond_tool_successed(**kwargs):  
-    agent_id = kwargs.get("agent_id")
-    agent:AgentBase = agent_dict.get(agent_id)
-    full_respond = kwargs.get("respond")
-    def callBack() -> str:
-        summary = f"{full_respond}" 
-        return summary           
-    await agent.on_tool_call(
-        tool_name=kwargs.get("name"),
-        success=True,
-        respond=kwargs.get("respond"),
-        callBack=callBack
-    )
+# @on_tool.on(factory.tool("query_tool_respond").succeeded({}))
+# async def on_query_tool_respond_tool_successed(**kwargs):  
+#     agent_id = kwargs.get("agent_id")
+#     agent:AgentBase = agent_dict.get(agent_id)
+#     full_respond = kwargs.get("respond")
+#     def callBack() -> str:
+#         summary = f"{full_respond}" 
+#         return summary           
+#     await agent.on_tool_call(
+#         tool_name=kwargs.get("name"),
+#         success=True,
+#         respond=kwargs.get("respond"),
+#         callBack=callBack
+#     )
 
 
 
@@ -303,35 +303,41 @@ def write_files(**kwargs) -> Event:
 
 
 # memory 工具实现
-@on_tool.on(factory.tool("query_tool_respond").called())
-async def query_tool_respond(**kwargs):
-    agent_id = kwargs.get("agent_id")
-    agent = agent_dict.get(agent_id)
-    tool_name = kwargs.get("tool_name")
-    index = kwargs.get("index",None)
-    if agent is None:
-        respond = Tool_respond(
-            name="query_tool_respond", agent_id=agent_id,
-            success=False, respond=f"Agent {agent_id} 不存在"
-        )
-        return factory.tool("query_tool_respond").failed(respond)
+# @on_tool.on(factory.tool("query_tool_respond").called())
+# async def query_tool_respond(**kwargs):
+#     agent_id = kwargs.get("agent_id")
+#     agent = agent_dict.get(agent_id)
+#     tool_name = kwargs.get("tool_name")
+#     index = kwargs.get("index", None)
+#     if agent is None:
+#         respond = Tool_respond(
+#             name="query_tool_respond", agent_id=agent_id,
+#             success=False, respond=f"Agent {agent_id} 不存在"
+#         )
+#         return factory.tool("query_tool_respond").failed(respond)
 
-    result = agent.memory.get(tool_name, index)
+#     store = agent.context_engine.get_store()
 
-    if result is None:
-        respond = Tool_respond(
-            name="query_tool_respond", agent_id=agent_id,
-            success=False,
-            respond=f"未找到 '{tool_name}'，"
-                    f"已存工具：{agent.memory.all_keys()}"
-        )
-        return factory.tool("query_tool_respond").failed(respond)
+#     if index is None or index == 0:
+#         source_key = store.latest_source_key(tool_name)
+#     else:
+#         source_key = f"tool:{tool_name}#{index}"
 
-    respond = Tool_respond(
-        name="query_tool_respond", agent_id=agent_id,
-        success=True, respond=result
-    )
-    return factory.tool("query_tool_respond").succeeded(respond)
+#     result = store.query(source_key) if source_key else None
+
+#     if result is None:
+#         respond = Tool_respond(
+#             name="query_tool_respond", agent_id=agent_id,
+#             success=False,
+#             respond=f"未找到 '{tool_name}' 的执行结果"
+#         )
+#         return factory.tool("query_tool_respond").failed(respond)
+
+#     respond = Tool_respond(
+#         name="query_tool_respond", agent_id=agent_id,
+#         success=True, respond=result
+#     )
+#     return factory.tool("query_tool_respond").succeeded(respond)
 
 
 # ... write agent 工具实现...
