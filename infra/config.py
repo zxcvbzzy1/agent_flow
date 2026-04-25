@@ -2,10 +2,8 @@ import os
 
 from domain.agent_base import AgentBase
 from domain.context.context import ContextEngine
-from domain.context.processor import DocumentProcessor, HistoryProcessor, ToolOutputProcessor
 from domain.context.providers import *
 from domain.event import ToolEventFactory
-from domain.memory.short.default_short_term_memory import DefaultShortTermMemory
 from infra.LLM.LLM_infra import LLM_Client, LLM_Model_Provider
 from infra.eventbus import EventBus
 
@@ -28,27 +26,25 @@ llm_client = LLM_Client(
 
 # ── LLM 摘要函数 ──────────────────────────────────────────────────
 
-# ---------------------------------------------------------------------------
-# 大纲生成 prompt
-# ---------------------------------------------------------------------------
-
 _OUTLINE_SYSTEM_PROMPT = """你是一个内容分析专家。你的任务是为给定文本生成结构化大纲。
 要求：
-- 提取文本的核心结构和主要内容点
-- 用层级列表表示（- 或数字编号）
-- 每个要点简洁，不超过一行
-- 保留关键数据、结论、重要细节
-- 不添加原文中没有的内容
-- 末尾注明总字符数和可读取的片段数
+- 文本已被分为 {chunk_count} 个片段，编号 0-{last_chunk}
+- 每个要点对应一个片段，在末尾标注 [片段N]
+- 提取核心内容和关键信息
 - 用中文回答
+- 格式：编号. 内容概述 [片段N]
 """
 
 
 def make_outline_fn(llm_client):
-    async def outline_fn(source_key: str, raw: str) -> str:
+    async def outline_fn(source_key: str, raw: str, chunk_count: int) -> str:
         user_prompt = f"请为以下内容生成结构化大纲，来源标识：[{source_key}]\n\n{raw}"
+        system_prompt = _OUTLINE_SYSTEM_PROMPT.format(
+            chunk_count=chunk_count,
+            last_chunk=chunk_count - 1,
+        )
         messages = [
-            {"role": "system", "content": _OUTLINE_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_prompt},
         ]
         try:
@@ -65,26 +61,28 @@ def make_outline_fn(llm_client):
     return outline_fn
 
 
-# ── Memory 实例 ─────────────────────────────────────
+# ── ContextStore ────────────────────────────────────────────────────
 
-memory = DefaultShortTermMemory()
+from domain.context.store.store import ContextStore
 
-store = ContextStore(token_limit=100000, storage_dir="./ctx_storage")
-store.register_processor("memory",   ToolOutputProcessor(outline_fn=make_outline_fn(llm_client)))
-store.register_processor("document", DocumentProcessor(outline_fn=make_outline_fn(llm_client)))
-store.register_processor("history",  HistoryProcessor())
+store = ContextStore(
+    token_limit=100000,
+    storage_dir="./ctx_storage",
+    outline_fn=make_outline_fn(llm_client),
+)
+
 # 上下文管理
 providers = [
-        UserPromptProvider(),
-        StateProvider(),
-        HistoryProvider(store),
-        ToolRespondProvider(store),
-        # ExploredContextProvider(store),
-        AvailableToolsProvider(["system", "search", "memory","write_agent"]),
-    ]
- 
-    # ── 4. ContextEngine ──────────────────────────────────────────
+    UserPromptProvider(),
+    StateProvider(),
+    HistoryProvider(store),
+    ToolRespondProvider(store),
+    StoredContextProvider(store),
+    AvailableToolsProvider(["system", "search", "memory", "write_agent"]),
+]
+
+# ── ContextEngine ──────────────────────────────────────────────────
 engine = ContextEngine(
     providers=providers,
-    context_store=store
+    context_store=store,
 )

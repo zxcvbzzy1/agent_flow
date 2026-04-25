@@ -9,8 +9,8 @@ from domain.tool import Tool
 
 
 class WriteAgent(AgentBase):
-    def __init__(self,id,name,llm,memory,context) -> None:
-        super().__init__(id,name,llm,memory,context)
+    def __init__(self, id, name, llm, context) -> None:
+        super().__init__(id, name, llm, context)
         self.states["write_agent"] = {
             "score":    1.0,
             "feedback": "",

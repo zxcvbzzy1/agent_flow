@@ -6,7 +6,6 @@ import re
 from typing import Any
 from domain.context.context import ContextEngine
 from domain.event import ToolEventFactory
-from domain.memory.short.short_term_memory import ShortTermMemory
 from domain.state import Agent_state
 from domain.tool import Tool
 
@@ -66,7 +65,6 @@ class AgentBase(ABC):
         id:      str,
         name:    str,
         llm,
-        memory:  ShortTermMemory,
         context: ContextEngine,
     ) -> None:
         self.id             = id
@@ -76,7 +74,6 @@ class AgentBase(ABC):
         self.states         = self.states_manage.get_state()
         self.tool_factory   = ToolEventFactory(prefix="infra")
         self.work_path      = "./temp/"
-        self.memory         = memory
         self.context_engine = context
 
         self._tool_done     = asyncio.Event()
@@ -119,7 +116,7 @@ class AgentBase(ABC):
     async def _think(self) -> AgentDecision:
         """ContextEngine 构造 user message → 调用 LLM → 解析决策"""
         state    = self.states_manage.get_state()
-        context  =  self.context_engine.build(state)
+        context  = self.context_engine.build(state)
         messages = [
             {"role": "system", "content": self._build_agent_prompt()},
             {"role": "user",   "content": context},
@@ -136,24 +133,16 @@ class AgentBase(ABC):
     # ── 工具执行 ──────────────────────────────────────────────────
 
     async def _execute_tools(self, tool_calls: list[ToolCall]) -> None:
-        """执行本轮所有工具，处理 $ref 依赖，等待全部完成"""
+        """执行本轮所有工具，等待全部完成"""
         self._tool_done.clear()
         self._pending_tools = len(tool_calls)
-        self.memory.begin_round()
-
-        no_dep  = [tc for tc in tool_calls if not self.has_dependency(tc.arguments)]
-        has_dep = [tc for tc in tool_calls if self.has_dependency(tc.arguments)]
-
+        no_dep  = [tc for tc in tool_calls ]
         await asyncio.gather(*[self._run_one(tc) for tc in no_dep])
-        for tc in has_dep:
-            await self._run_one(tc)
-
         await self._tool_done.wait()
 
     async def _run_one(self, tc: ToolCall) -> None:
-        resolved_args = self.resolve_args(tc.arguments)
         await self.tool_factory.tool(tc.tool_name).emit_called(
-            {**resolved_args, "agent_id": self.id}
+            {**tc.arguments, "agent_id": self.id}
         )
 
     # ── 工具回调 ──────────────────────────────────────────────────
@@ -167,14 +156,14 @@ class AgentBase(ABC):
         s = self.states
         if success:
             try:
-                self.memory.store(tool_name, respond)
-                source_key = f"tool:{tool_name}#{self.memory.count(tool_name)}"
-                await self.context_engine.get_store().write(
-                        source_key=source_key,
-                        raw=respond,
-                        scope="memory",
-                        metadata={"tool_name": tool_name},
-                    )
+                store = self.context_engine.get_store()
+                source_key = f"tool:{tool_name}#{store.count(f'tool:{tool_name}#')}"
+                await store.write(
+                    source_key=source_key,
+                    raw=respond,
+                    scope="memory",
+                    metadata={"tool_name": tool_name},
+                )
                 s["tool_history"].append(tool_name)
                 s["last_tool_ok"] = True
                 s["retry"]        = 0
@@ -226,45 +215,6 @@ class AgentBase(ABC):
 }}
 """
 
-    # ── $ref 解析 ─────────────────────────────────────────────────
-
-    def has_dependency(self, arguments: dict) -> bool:
-        return any(
-            isinstance(v, str) and bool(self._REF_PATTERN.fullmatch(v))
-            for v in arguments.values()
-        )
-
-    def resolve_args(self, arguments: dict) -> dict:
-        return {
-            k: self._resolve_single_ref(v)
-               if isinstance(v, str) and bool(self._REF_PATTERN.fullmatch(v))
-               else v
-            for k, v in arguments.items()
-        }
-
-    def _resolve_single_ref(self, ref: str) -> str:
-        m = re.fullmatch(r"\$ref:([^#]+)#(\d+)", ref)
-        if not m:
-            return ref
-        tool_name = m.group(1)
-        index     = int(m.group(2))
-
-        if index == 0:
-            result = self.memory.get_round(tool_name)
-            if result is not None:
-                return result
-            result = self.memory.get(tool_name, 0)
-            if result is not None:
-                return result
-            print(f"[WARN] $ref:{tool_name}#0 本轮和历史均未找到")
-            return ""
-
-        result = self.memory.get(tool_name, index)
-        if result is None:
-            print(f"[WARN] $ref:{tool_name}#{index} 未找到，"
-                  f"共调用 {self.memory.count(tool_name)} 次")
-            return ""
-        return result
 
     # ── 决策解析 ──────────────────────────────────────────────────
 
