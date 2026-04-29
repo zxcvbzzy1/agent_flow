@@ -156,19 +156,13 @@ class AgentBase(ABC):
         s = self.states
         if success:
             try:
-                store = self.context_engine.get_store()
-                source_key = f"tool:{tool_name}#{store.count(f'tool:{tool_name}#')}"
-                await store.write(
-                    source_key=source_key,
-                    raw=respond,
-                    scope="memory",
-                    metadata={"tool_name": tool_name},
-                )
+                memory = self.context_engine.get_memory()
+                memory.store("tool_respond", tool_name, respond)
                 s["tool_history"].append(tool_name)
                 s["last_tool_ok"] = True
                 s["retry"]        = 0
             except Exception as e:
-                print(f"[tool:{tool_name}] store error: {e}")
+                print(f"[tool:{tool_name}] memory error: {e}")
         else:
             s["last_tool_ok"] = False
             s["retry"]       += 1

@@ -1,5 +1,8 @@
+import json
+
 from domain.agent_base import AgentBase
 from domain.event import Tool_respond, Event
+from domain.state import Plan, PlanStep
 from infra.LLM.LLM_infra import LLM_Client, LLM_Model_Provider
 from infra.tool.tool_bind import Tool_bind
 import os
@@ -49,6 +52,18 @@ async def on_tool_fail(**kwargs):  # event.playload为Tool_respond类，kwargs�
         respond=kwargs.get("respond"),
     )
 
+@on_tool.on(factory.tool("write_plan").succeeded({}))
+async def write_plan_success(**kwargs): 
+    agent_id = kwargs.get("agent_id")
+    agent = agent_dict.get(agent_id)
+    await agent.on_tool_call(
+        tool_name=kwargs.get("name"),
+        success=True,
+        respond="计划撰写成功",
+    )
+
+
+
 # @on_tool.on(factory.tool("query_tool_respond").succeeded({}))
 # async def on_query_tool_respond_tool_successed(**kwargs):  
 #     agent_id = kwargs.get("agent_id")
@@ -65,7 +80,7 @@ async def on_tool_fail(**kwargs):  # event.playload为Tool_respond类，kwargs�
 #     )
 
 
-
+# 内部工具函数
 async def call_llm_with_prompt(system_prompt: str, user_prompt: str) -> str:
     """
     异步调用 LLM 生成内容的辅助函数
@@ -97,6 +112,26 @@ async def call_llm_with_prompt(system_prompt: str, user_prompt: str) -> str:
         
     except Exception as e:
         raise Exception(f"LLM 调用失败: {str(e)}")
+
+
+def _dict_to_plan(plan_dict: dict) -> Plan:
+    plan = Plan()
+    for s in plan_dict.get("steps", []):
+        step = PlanStep(
+            step_id=s["step_id"],
+            title=s["title"],
+            detail=s.get("detail", ""),
+            status=s.get("status", "pending"),
+            note=s.get("note", ""),
+            created_at=s.get("created_at", 0),
+            updated_at=s.get("updated_at", 0),
+        )
+        plan.steps.append(step)
+    plan.finished = plan_dict.get("finished", False)
+    plan.summary  = plan_dict.get("summary", "")
+    return plan
+
+
 
 # 系统工具
 @on_tool.on(factory.tool("read_files").called())
@@ -299,6 +334,202 @@ def write_files(**kwargs) -> Event:
             respond=f"工具执行异常: {str(e)}"
         )
         return factory.tool("write_files").failed(respond)
+
+# plan工具
+@on_tool.on(factory.tool("write_plan").called())
+async def write_plan(**kwargs) -> Event:
+    agent_id    = kwargs.get("agent_id", "")
+    tool_name   = "write_plan"
+    try:
+        user_prompt = kwargs.get("user_prompt", "")
+        reference   = kwargs.get("reference", "")
+
+        # ── 调用 LLM 生成计划 ─────────────────────────────────────
+        system_prompt = """你是一个任务规划专家。
+根据用户需求，制定结构化的任务计划。
+
+严格按以下 JSON 格式输出，不要有任何其他内容：
+{
+    "steps": [
+        {
+            "step_id": "1",
+            "title": "步骤标题",
+            "detail": "步骤详细描述",
+        }
+    ]
+}
+
+""" 
+        prompt = f"用户需求：{user_prompt}"
+        if reference:
+            prompt += f"\n\n参考资料：{reference}"
+        raw = await call_llm_with_prompt(system_prompt, prompt)
+
+        # ── 解析 LLM 输出 ─────────────────────────────────────────
+        text = raw.strip()
+        if text.startswith("```"):
+            text = "\n".join(
+                l for l in text.splitlines()
+                if not l.strip().startswith("```")
+            )
+        data      = json.loads(text)
+        raw_steps = data.get("steps", [])
+
+        if not raw_steps:
+            respond = Tool_respond(
+                agent_id=agent_id, name=tool_name, success=False,
+                respond="LLM 未生成任何步骤"
+            )
+            return factory.tool(tool_name).failed(respond)
+
+        # ── 写入计划 ──────────────────────────────────────────────
+        agent = agent_dict.get(agent_id)
+        plan  = Plan()
+        plan.add_steps(raw_steps)
+        agent.states["plan"] = plan.to_dict()
+
+        respond = Tool_respond(
+            agent_id=agent_id,
+            name=tool_name,
+            success=True,
+            respond={
+                "message": f"计划已创建，共 {len(plan.steps)} 个步骤",
+                "plan":    plan.to_dict(),
+            }
+        )
+        return factory.tool(tool_name).succeeded(respond)
+
+    except json.JSONDecodeError as e:
+        respond = Tool_respond(
+            agent_id=agent_id, name=tool_name, success=False,
+            respond=f"计划解析失败，LLM 输出格式有误: {str(e)}"
+        )
+        return factory.tool(tool_name).failed(respond)
+    except Exception as e:
+        respond = Tool_respond(
+            agent_id=agent_id, name=tool_name, success=False,
+            respond=f"创建计划失败: {str(e)}"
+        )
+        return factory.tool(tool_name).failed(respond)
+
+
+@on_tool.on(factory.tool("update_plan").called())
+def update_plan(**kwargs) -> Event:
+    try:
+        agent_id = kwargs.get("agent_id", "")
+        step_id  = kwargs.get("step_id", "")
+        status   = kwargs.get("status", "")
+        note     = kwargs.get("note", "")
+
+        agent    = agent_dict.get(agent_id)
+        plan_dict = agent.states.get("plan", {})
+
+        if not plan_dict:
+            respond = Tool_respond(
+                agent_id=agent_id,
+                name="update_plan",
+                success=False,
+                respond="当前没有进行中的计划，请先调用 write_plan"
+            )
+            return factory.tool("update_plan").failed(respond)
+
+        # 从 state 重建 Plan 对象
+        plan = _dict_to_plan(plan_dict)
+        step = plan.update_step(step_id, status, note)
+
+        if step is None:
+            respond = Tool_respond(
+                agent_id=agent_id,
+                name="update_plan",
+                success=False,
+                respond=f"步骤 '{step_id}' 不存在"
+            )
+            return factory.tool("update_plan").failed(respond)
+
+        # 回写 state
+        agent.states["plan"] = plan.to_dict()
+
+        respond = Tool_respond(
+            agent_id=agent_id,
+            name="update_plan",
+            success=True,
+            respond={
+                "message":      f"步骤 '{step_id}' 已更新为 {status}",
+                "updated_step": step.to_dict(),
+                "next_pending": plan.next_pending().to_dict() if plan.next_pending() else None,
+            }
+        )
+        return factory.tool("update_plan").succeeded(respond)
+
+    except Exception as e:
+        respond = Tool_respond(
+            agent_id=kwargs.get("agent_id", ""),
+            name="update_plan",
+            success=False,
+            respond=f"更新计划失败: {str(e)}"
+        )
+        return factory.tool("update_plan").failed(respond)
+
+@on_tool.on(factory.tool("finish_plan").called())
+def finish_plan(**kwargs) -> Event:
+    try:
+        agent_id = kwargs.get("agent_id", "")
+        summary  = kwargs.get("summary", "")
+
+        agent     = agent_dict.get(agent_id)
+        plan_dict = agent.states.get("plan", {})
+
+        if not plan_dict:
+            respond = Tool_respond(
+                agent_id=agent_id,
+                name="finish_plan",
+                success=False,
+                respond="当前没有进行中的计划"
+            )
+            return factory.tool("finish_plan").failed(respond)
+
+        plan = _dict_to_plan(plan_dict)
+
+        # 检查是否还有未完成步骤
+        unfinished = plan.get_steps("pending") + plan.get_steps("in_progress")
+        if unfinished:
+            respond = Tool_respond(
+                agent_id=agent_id,
+                name="finish_plan",
+                success=False,
+                respond={
+                    "message":    f"还有 {len(unfinished)} 个步骤未完成，请先处理",
+                    "unfinished": [s.to_dict() for s in unfinished],
+                }
+            )
+            return factory.tool("finish_plan").failed(respond)
+
+        plan.finish(summary)
+        agent.states["plan"]     = plan.to_dict()
+        agent.states["final"]    = summary
+        agent.states["is_finished"] = True
+
+        respond = Tool_respond(
+            agent_id=agent_id,
+            name="finish_plan",
+            success=True,
+            respond={
+                "message": "计划已完成",
+                "summary": summary,
+                "plan":    plan.to_dict(),
+            }
+        )
+        return factory.tool("finish_plan").succeeded(respond)
+
+    except Exception as e:
+        respond = Tool_respond(
+            agent_id=kwargs.get("agent_id", ""),
+            name="finish_plan",
+            success=False,
+            respond=f"完成计划失败: {str(e)}"
+        )
+        return factory.tool("finish_plan").failed(respond)
+
 
 
 

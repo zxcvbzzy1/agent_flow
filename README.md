@@ -100,3 +100,125 @@
 
 
 ### 上下文工程
+
+#### 涉及文件
+
+1. `domain/context/strategy.py`定义上下文管理策略基类与内置策略。
+   
+   `ContextStrategy`从记忆中读取原始数据并产出`ContextItem[]`
+   
+    `ItemStrategy`对已有`ContextItem[]`做变换
+    
+    `|`运算符串联成`StrategyPipeline`
+
+2. `domain/context/providers.py`定义上下文提供类。
+   
+   静态Provider（数据来自`state dict`）
+   
+   动态Provider（数据来自`ShortTermMemory`）
+   
+   动态Provider获得经`Strategy`处理后数据
+
+3. `domain/context/context.py`定义上下文引擎`ContextEngine`，按Provider注册顺序依次拼接为最终LLM prompt
+4. `domain/memory/short/short_term_memory.py`定义`ShortTermMemory`抽象接口与记忆存储字段类型
+
+
+
+#### 内置Provider 分类
+
+---
+静态Provider（数据来自`state dict`，不依赖记忆）
+
+| Provider | 注入内容 |
+|---|---|
+| `UserPromptProvider` | 用户原始需求 |
+| `StateProvider` | 当前执行状态（重试次数、工具历史、失败提示） |
+| `AvailableToolsProvider` | 当前可用工具列表及参数定义 |
+
+---
+动态Provider（数据来自`ShortTermMemory`，经Strategy处理后格式化）
+
+| Provider | 记忆字段 | 默认策略 |
+|---|---|---|
+| `ToolOutputProvider` | `tool_respond` | `FullHistoryStrategy()` |
+| `HistoryProvider` | `agent_history` | `FullHistoryStrategy()` |
+
+#### 内置策略
+
+| 策略 | 类型 | 说明 |
+|---|---|---|
+| `FullHistoryStrategy` | `ContextStrategy` | 透传全部原文 |
+| `LatestOnlyStrategy` | `ContextStrategy` | 每个工具只取最新一次输出 |
+| `RecencyStrategy(keep_last)` | `ItemStrategy` | 只保留最近N条item |
+| `TokenBudgetStrategy(token_limit)` | `ItemStrategy` | 超出token上限时从最旧item开始丢弃 |
+| `SummarizeStrategy(threshold, outline_fn)` | `ItemStrategy` | 超长item替换为摘要，无`outline_fn`时降级为截断 |
+| `FilterByToolStrategy(tool_names)` | `ItemStrategy` | 只保留指定工具名的item |
+| `ChunkToFileStrategy(storage_dir,token_limit)`  | `ItemStrategy` | 超过token限制的item持久化分块存储到磁盘上 |
+
+
+
+
+#### 添加自定义Provider
+
+1. 静态Provider：继承`ContextProvider`，实现`get(state)`
+2. 动态Provider：继承`MemoryProvider`，实现`get(state)`，内部通过`self._get_items(state)`获取经Strategy处理后的`ContextItem[]`
+
+
+#### 添加自定义Strategy
+
+1. 从数据源开始的策略：继承`ContextStrategy`，实现`apply`
+2. 中间过程检验的策略：继承`ItemStrategy`，实现`transform`
+
+#### 策略组合
+
+策略通过`|`运算符串联成Pipeline，第一个策略从`ShortTermMemory`读取产出初始`ContextItem[]`，后续`ItemStrategy`依次变换
+
+```
+# 透传全部 → 只保留最近10条 → token预算10000
+FullHistoryStrategy() | RecencyStrategy(10) | TokenBudgetStrategy(10000)
+
+# 只取最新 → 超长摘要
+LatestOnlyStrategy() | SummarizeStrategy(threshold=800, outline_fn=llm_summarize)
+
+...
+
+```
+
+#### 整体流程
+
+1. 定义Provider实例。
+   
+    ```
+    # 静态 — 数据来自 state dict
+    user_provider = UserPromptProvider()
+  
+    # 动态 — 数据来自 ShortTermMemory
+    tool_output_provider = ToolOutputProvider(
+        memory,
+        "tool_respond",
+        FullHistoryStrategy() | 
+        RecencyStrategy(10) | 
+        TokenBudgetStrategy(10000),
+    )
+    ```
+
+2. 组装Provider列表并实例化`ContextEngine`，Provider注册顺序即prompt注入顺序
+
+    ```
+    providers = [
+        user_provider,        # 1. 用户需求
+        tool_output_provider, # 2. 工具反馈
+    ]
+
+    engine = ContextEngine(providers=providers, memory=memory)
+    ```
+
+3. 在Agent中使用，`ContextEngine.build(state)`返回拼接好的prompt字符串
+
+    ```
+    prompt = engine.build(state)
+
+    prompt 按providers顺序拼接，形如：
+    # "请开始处理以下需求：用户需求：...\n\n## 当前执行状态\n...\n\n## 对话历史\n...\n\n## 工具反馈\n...\n\n当前可用工具：..."
+    ```
+

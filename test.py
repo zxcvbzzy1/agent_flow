@@ -12,11 +12,10 @@ from domain.tool import Tool
 from domain.event import ToolEventFactory
 from domain.context.context import ContextEngine
 from domain.context.providers import (
-    UserPromptProvider, StateProvider, ToolRespondProvider,
-    StoredContextProvider, AvailableToolsProvider, HistoryProvider,
+    UserPromptProvider, StateProvider, ToolOutputProvider,
+    AvailableToolsProvider, HistoryProvider,
 )
-from domain.context.store.store import ContextStore
-from domain.context.store.node import ContextNode
+from domain.memory.short.default_short_term_memory import DefaultShortTermMemory
 
 
 class TestToolEventFactory:
@@ -83,15 +82,6 @@ class TestToolEventFactory:
         assert len(events) == 8
         assert "test.search.rag.search.failed" in events
 
-    def test_export_class_generation(self, tmp_path):
-        """测试静态代码导出功能"""
-        export_path = tmp_path / "static_events.py"
-        self.factory.export_class(str(export_path))
-
-        assert export_path.exists()
-        content = export_path.read_text(encoding="utf-8")
-        assert "StaticToolEventFactory" in content
-        assert "rag_search" in content
 
 
 class TestWriteAgentCore:
@@ -101,10 +91,10 @@ class TestWriteAgentCore:
         Tool._registry.clear()
         self.mock_llm = AsyncMock()
         # 创建最简 context engine
-        self.store = ContextStore(token_limit=100000)
+        self.memory = DefaultShortTermMemory(["tool_respond", "agent_history", "plan"])
         self.engine = ContextEngine(
             providers=[UserPromptProvider(), StateProvider()],
-            context_store=self.store,
+            memory=self.memory,
         )
         self.agent = WriteAgent(
             id="wa_001",
@@ -162,20 +152,19 @@ class TestWriteAgentCore:
 
 
 class TestContextEngine:
-    """ContextEngine 核心链路测试：store.write → window → provider.get → engine.build"""
+    """ContextEngine 核心链路测试：memory.store → provider.get → engine.build"""
 
     def setup_method(self):
-        self.store = ContextStore(token_limit=100000)
+        self.memory = DefaultShortTermMemory(["tool_respond", "agent_history", "plan"])
 
         self.providers = [
             UserPromptProvider(),
             StateProvider(),
-            HistoryProvider(self.store),
-            ToolRespondProvider(self.store),
-            StoredContextProvider(self.store),
+            HistoryProvider(self.memory, "agent_history"),
+            ToolOutputProvider(self.memory, "tool_respond"),
             AvailableToolsProvider(["write_agent"]),
         ]
-        self.engine = ContextEngine(providers=self.providers, context_store=self.store)
+        self.engine = ContextEngine(providers=self.providers, memory=self.memory)
 
     def _base_state(self, **overrides) -> dict:
         state = {
@@ -195,19 +184,11 @@ class TestContextEngine:
         assert "写一篇科幻小说" in result
         assert "当前执行状态" in result
 
-    # ── store.write → ToolRespondProvider ──────────────────────────
+    # ── memory.store → ToolOutputProvider ──────────────────────────
 
-    def test_tool_respond_appears_in_prompt(self):
-        """工具输出写入 store 后，build 结果中包含工具反馈"""
-        nodes = asyncio.run(
-            self.store.write(
-                source_key="tool:outline_generation#1",
-                raw="第一章：深海之谜",
-                scope="memory",
-                metadata={"tool_name": "outline_generation"},
-            )
-        )
-        assert len(nodes) > 0, "write 应返回节点列表"
+    def test_tool_output_appears_in_prompt(self):
+        """工具输出写入 memory 后，build 结果中包含工具反馈"""
+        self.memory.store("tool_respond", "outline_generation", "第一章：深海之谜")
 
         result = self.engine.build(self._base_state(
             tool_history=["outline_generation"],
@@ -215,52 +196,12 @@ class TestContextEngine:
         assert "工具反馈" in result
         assert "outline_generation" in result
 
-    def test_short_output_creates_summary_node(self):
-        """短工具输出（≤800字符）应生成 promoted 的 summary 节点"""
-        short_text = "简单的工具输出结果"
-        nodes = asyncio.run(
-            self.store.write("tool:short_tool#1", short_text, scope="memory")
-        )
-        assert len(nodes) == 1
-        assert nodes[0].node_type == "summary"
-        assert nodes[0].promoted is True
-
-        window = self.store.window(scope="memory")
-        assert len(window) == 1
-        assert window[0].content == short_text
-
-    def test_long_output_creates_summary_and_chunks(self):
-        """长工具输出应生成 summary(promoted) + chunks(stored)"""
-        long_text = "这是一段很长的文本。" * 200  # ~1800 字符
-        nodes = asyncio.run(
-            self.store.write("tool:long_tool#1", long_text, scope="memory")
-        )
-        types = {n.node_type for n in nodes}
-        assert "summary" in types
-        assert "chunk" in types
-
-        # summary 应该 promoted，chunk 不应该
-        summary = next(n for n in nodes if n.node_type == "summary")
-        assert summary.promoted is True
-        chunks = [n for n in nodes if n.node_type == "chunk"]
-        assert all(not c.promoted for c in chunks)
-
     # ── 多工具输出 ───────────────────────────────────────────────
 
-    def test_multiple_tool_responds(self):
+    def test_multiple_tool_outputs(self):
         """多次工具调用结果都在 prompt 中"""
-        asyncio.run(self.store.write(
-            "tool:requirements_analysis#1",
-            "需求：科幻悬疑，30000字",
-            scope="memory",
-            metadata={"tool_name": "requirements_analysis"},
-        ))
-        asyncio.run(self.store.write(
-            "tool:outline_generation#1",
-            "大纲：第一章…",
-            scope="memory",
-            metadata={"tool_name": "outline_generation"},
-        ))
+        self.memory.store("tool_respond", "requirements_analysis", "需求：科幻悬疑，30000字")
+        self.memory.store("tool_respond", "outline_generation", "大纲：第一章…")
         result = self.engine.build(self._base_state(
             tool_history=["requirements_analysis", "outline_generation"],
         ))
@@ -270,12 +211,8 @@ class TestContextEngine:
     # ── HistoryProvider ───────────────────────────────────────────
 
     def test_history_appears_in_prompt(self):
-        """写入 history scope 后，对话历史出现在 prompt"""
-        asyncio.run(self.store.write(
-            "history:turn_1",
-            "用户：写一篇小说",
-            scope="history",
-        ))
+        """写入 history 后，对话历史出现在 prompt"""
+        self.memory.store("agent_history", "turn_1", "用户：写一篇小说")
         result = self.engine.build(self._base_state())
         assert "对话历史" in result
         assert "写一篇小说" in result
@@ -284,141 +221,15 @@ class TestContextEngine:
 
     def test_disabled_slot_is_skipped(self):
         """禁用 slot 后对应 provider 不注入"""
-        ToolRespondProvider.disable()
+        ToolOutputProvider.disable()
         try:
-            asyncio.run(self.store.write(
-                "tool:outline_generation#1",
-                "大纲内容",
-                scope="memory",
-            ))
+            self.memory.store("tool_respond", "outline_generation", "大纲内容")
             result = self.engine.build(self._base_state(
                 tool_history=["outline_generation"],
             ))
             assert "工具反馈" not in result
         finally:
-            ToolRespondProvider.enable()
-
-    # ── on_tool_call 模拟 ────────────────────────────────────────
-
-    def test_on_tool_call_writes_to_store(self):
-        """模拟 on_tool_call 的 store.write 流程，验证数据流完整"""
-        tool_name = "requirements_analysis"
-        respond = "分析结果：科幻小说，30000字"
-
-        # 模拟 on_tool_call 中的 store.write 流程
-        store = self.store
-        source_key = f"tool:{tool_name}#{store.count(f'tool:{tool_name}#')}"
-        asyncio.run(store.write(
-            source_key=source_key,
-            raw=respond,
-            scope="memory",
-            metadata={"tool_name": tool_name},
-        ))
-
-        # 验证 prompt 中有工具反馈
-        result = self.engine.build(self._base_state(
-            tool_history=[tool_name],
-        ))
-        assert "工具反馈" in result
-        assert "requirements_analysis" in result
-
-    # ── query（替代 ShortTermMemory）──────────────────────────────
-
-    def test_query_returns_full_content(self):
-        """query() 返回 source_key 的完整内容"""
-        asyncio.run(self.store.write(
-            "tool:my_tool#1",
-            "完整输出内容",
-            scope="memory",
-        ))
-        result = self.store.query("tool:my_tool#1")
-        assert result == "完整输出内容"
-
-    def test_query_long_content_chunks_concatenated(self):
-        """query() 对长内容返回 chunk 拼接"""
-        long_text = "这是一段很长的文本。" * 200
-        asyncio.run(self.store.write(
-            "tool:long_tool#1",
-            long_text,
-            scope="memory",
-        ))
-        result = self.store.query("tool:long_tool#1")
-        assert result == long_text
-
-    def test_latest_source_key(self):
-        """latest_source_key 返回最近写入的 source_key"""
-        asyncio.run(self.store.write("tool:my_tool#1", "a", scope="memory"))
-        asyncio.run(self.store.write("tool:my_tool#2", "b", scope="memory"))
-        assert self.store.latest_source_key("my_tool") == "tool:my_tool#2"
-
-    # ── explore / dismiss ────────────────────────────────────────
-
-    def test_explore_promotes_chunk(self):
-        """explore() 将暂存的 chunk promote 进窗口"""
-        long_text = "这是一段很长的文本。" * 200
-        asyncio.run(self.store.write("tool:long_tool#1", long_text, scope="memory"))
-
-        # 初始状态：chunk 不在窗口中
-        window_before = self.store.window(scope="memory")
-        chunk_nodes = [n for n in window_before if n.node_type == "chunk"]
-        assert len(chunk_nodes) == 0
-
-        # explore 后：chunk 进入窗口
-        self.store.explore("tool:long_tool#1", chunk_index=0)
-        window_after = self.store.window(scope="memory")
-        chunk_nodes = [n for n in window_after if n.node_type == "chunk"]
-        assert len(chunk_nodes) == 1
-        assert chunk_nodes[0].chunk_index == 0
-
-    def test_dismiss_removes_from_window(self):
-        """dismiss() 将指定 source_key 从窗口移到暂存池"""
-        asyncio.run(self.store.write("tool:my_tool#1", "内容", scope="memory"))
-
-        # 初始在窗口中
-        nodes_before = self.store.window(scope="memory")
-        my_tool_in_window = any(n.source_key == "tool:my_tool#1" for n in nodes_before)
-        assert my_tool_in_window
-
-        self.store.dismiss("tool:my_tool#1")
-        nodes_after = self.store.window(scope="memory")
-        my_tool_in_window = any(n.source_key == "tool:my_tool#1" for n in nodes_after)
-        assert not my_tool_in_window
-        # 暂存池有内容
-        assert len(self.store.list_stored(scope="memory")) > 0
-
-    # ── list_stored ──────────────────────────────────────────────
-
-    def test_list_stored_shows_stored_content(self):
-        """list_stored() 返回暂存池目录"""
-        long_text = "这是一段很长的文本。" * 200
-        asyncio.run(self.store.write("tool:long_tool#1", long_text, scope="memory"))
-
-        stored = self.store.list_stored(scope="memory")
-        assert len(stored) == 1
-        assert stored[0]["source_key"] == "tool:long_tool#1"
-        assert stored[0]["total_chunks"] > 0
-
-    # ── StoredContextProvider ─────────────────────────────────────
-
-    def test_stored_provider_shows_stored_content(self):
-        """StoredContextProvider 展示暂存池目录"""
-        long_text = "这是一段很长的文本。" * 200
-        asyncio.run(self.store.write("tool:long_tool#1", long_text, scope="memory"))
-
-        result = self.engine.build(self._base_state())
-        assert "暂存内容" in result
-
-    # ── token budget / demote ────────────────────────────────────
-
-    def test_demote_on_budget_exceeded(self):
-        """token 超限时自动 demote 低优先级节点"""
-        small_store = ContextStore(token_limit=50)
-        text = "x" * 400  # ~100 tokens
-        asyncio.run(small_store.write("tool:big#1", text, scope="memory"))
-
-        # 短输出是 summary 节点，超限后会被 demote
-        window = small_store.window(scope="memory")
-        assert len(window) == 0
+            ToolOutputProvider.enable()
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ class DefaultShortTermMemory(ShortTermMemory):
     """
 
     def __init__(self,fields:memory_field) -> None:
-        super.__init__(fields)
+        super().__init__(fields)
         self._store:       dict[str, list[str]] = {}
 
 
@@ -47,8 +47,11 @@ class DefaultShortTermMemory(ShortTermMemory):
         else:
             return len(mid_field.get(key, []))
 
-    def all_keys(self) -> list[str]:
-        return list(self._store.keys())
+    def all_keys(self) -> list[tuple[str, str]]:
+        return [(field, key) for field, keys in self._store.items() for key in keys]
+
+    def keys_by_field(self, field) -> list[str]:
+        return list(self._store.get(field, {}).keys())
 
 
     # ── 清空 ──────────────────────────────────────────────────────

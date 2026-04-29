@@ -1,3 +1,4 @@
+from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Literal
 
@@ -27,7 +28,10 @@ class ShortTermMemory(ABC):
 
 
     @abstractmethod
-    def all_keys(self) -> list[str]: ...
+    def all_keys(self) -> list[tuple[str, str]]: ...
+
+    @abstractmethod
+    def keys_by_field(self, field: memory_field) -> list[str]: ...
 
     @abstractmethod
     def count(self, field:memory_field,key: str) -> int: ...

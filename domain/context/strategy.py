@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable
-from domain.memory.short.default_short_term_memory import ShortTermMemory
+from domain.memory.short.short_term_memory import ShortTermMemory, memory_field
 
 
 
@@ -21,7 +21,7 @@ class ContextItem:
 
     @property
     def tokens(self) -> int:
-        return max(1, len(self.content) // 4)
+        return max(1, len(self.content))
 
 class ContextStrategy(ABC):
     """
@@ -30,7 +30,7 @@ class ContextStrategy(ABC):
     """
 
     @abstractmethod
-    def apply(self, memory: ShortTermMemory, state: dict) -> list[ContextItem]:
+    def apply(self, memory: ShortTermMemory, field: memory_field, state: dict) -> list[ContextItem]:
         ...
 
     def __or__(self, other: "ContextStrategy") -> "StrategyPipeline":
@@ -43,13 +43,13 @@ class ItemStrategy(ContextStrategy, ABC):
     Pipeline 中第二个及之后的策略应继承此类。
     """
 
-    def apply(self, memory: ShortTermMemory, state: dict) -> list[ContextItem]:
-        # 单独使用时从 memory 拿全部原文再变换
+    def apply(self, memory: ShortTermMemory, field: memory_field, state: dict) -> list[ContextItem]:
+        # 单独使用时从 memory 拿指定 field 的原文再变换
         items = [
-            ContextItem(source=f"{key}#{i+1}", content=raw)
-            for key in memory.all_keys()
+            ContextItem(source=f"{key}#{i+1}", content=raw, metadata={"field": field, "tool_name": key})
+            for key in memory.keys_by_field(field)
             for i, raw in enumerate(
-                [memory.get(key, j+1) for j in range(memory.count(key))]
+                [memory.get(field, key, j+1) for j in range(memory.count(field, key))]
             )
             if raw
         ]
@@ -69,16 +69,16 @@ class StrategyPipeline(ContextStrategy):
     def __init__(self, strategies: list[ContextStrategy]) -> None:
         self._strategies = strategies
 
-    def apply(self, memory: ShortTermMemory, state: dict) -> list[ContextItem]:
+    def apply(self, memory: ShortTermMemory, field: memory_field, state: dict) -> list[ContextItem]:
         # 第一个策略从 memory 产出初始 items
-        items = self._strategies[0].apply(memory, state)
+        items = self._strategies[0].apply(memory, field, state)
         # 后续策略对 items 做变换，用 ItemStrategy 包装
         for s in self._strategies[1:]:
             if isinstance(s, ItemStrategy):
                 items = s.transform(items, state)
             else:
                 # 非 ItemStrategy 重新从 memory 读，结果追加
-                items = s.apply(memory, state)
+                items = s.apply(memory, field, state)
         return items
 
     def __or__(self, other: "ContextStrategy") -> "StrategyPipeline":
@@ -93,17 +93,17 @@ class StrategyPipeline(ContextStrategy):
 class FullHistoryStrategy(ContextStrategy):
     """透传所有工具输出原文，不做任何处理。"""
 
-    def apply(self, memory: ShortTermMemory, state: dict) -> list[ContextItem]:
+    def apply(self, memory: ShortTermMemory, field: memory_field, state: dict) -> list[ContextItem]:
         items: list[ContextItem] = []
-        
-        for key in memory.all_keys():
-            for i in range(memory.count(key)):
-                raw = memory.get(key, i + 1)
+
+        for key in memory.keys_by_field(field):
+            for i in range(memory.count(field, key)):
+                raw = memory.get(field, key, i + 1)
                 if raw:
                     items.append(ContextItem(
                         source=f"{key}#{i+1}",
                         content=raw,
-                        metadata={"tool_name": key, "call_index": i + 1},
+                        metadata={"field": field, "tool_name": key, "call_index": i + 1},
                     ))
         return items
 
@@ -111,15 +111,15 @@ class FullHistoryStrategy(ContextStrategy):
 class LatestOnlyStrategy(ContextStrategy):
     """每个工具只取最新一次输出。"""
 
-    def apply(self, memory: ShortTermMemory, state: dict) -> list[ContextItem]:
+    def apply(self, memory: ShortTermMemory, field: memory_field, state: dict) -> list[ContextItem]:
         items: list[ContextItem] = []
-        for key in memory.all_keys():
-            raw = memory.get(key, 0)
+        for key in memory.keys_by_field(field):
+            raw = memory.get(field, key, 0)
             if raw:
                 items.append(ContextItem(
                     source=f"{key}#latest",
                     content=raw,
-                    metadata={"tool_name": key},
+                    metadata={"field": field, "tool_name": key},
                 ))
         return items
 
@@ -196,3 +196,4 @@ class FilterByToolStrategy(ItemStrategy):
             i for i in items
             if i.metadata.get("tool_name") in self._names
         ]
+
