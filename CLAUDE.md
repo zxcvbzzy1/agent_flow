@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Novel Agent — a multi-agent novel writing system built on an EDA (Event-Driven Architecture) with a DDD-inspired layered structure. Two agents collaborate: **WriteAgent** (content creation) and **CriticAgent** (quality evaluation), orchestrated through a BusinessGraph workflow engine.
+Agent FLOW — a multi-agent novel writing system built on an EDA (Event-Driven Architecture) with a DDD-inspired layered structure. Two agents collaborate: **WriteAgent** (content creation) and **CriticAgent** (quality evaluation), orchestrated through a BusinessGraph workflow engine.
 
 ## Architecture
 
@@ -22,27 +22,25 @@ Pure business logic, no infrastructure dependencies.
 - **`agent/critic/`** — `CriticAgent(AgentBase)`: evaluation agent (currently minimal).
 
 ### Context System (`domain/context/`)
-Manages what content gets injected into the LLM prompt with token budgeting and multi-granularity content.
+Manages what content gets injected into the LLM prompt. Uses Strategy pattern over ShortTermMemory — no centralized store.
 
-Data flow: `raw content → GranularityProcessor → ContextNode(s) → ContextStore.write() → ContextStore.window() → ContextProvider.get() → ContextEngine.build() → LLM prompt`
+Data flow: `ShortTermMemory → ContextStrategy.apply() → ContextItem[] → Provider.get() → ContextEngine.build() → LLM prompt`
 
-- **`store/node.py`** — `ContextNode`: content unit with three granularity levels: `skeleton` (LLM-generated summary, low tokens, default promoted), `chunk` (fixed-size fragments, on-demand), `full` (original content, rarely promoted). Token count auto-estimated as `len(content)//4`.
-- **`store/store.py`** — `ContextStore`: manages a "window" of promoted nodes with token budgeting. `write()` splits content via registered processors; `explore()` promotes specific nodes into the window; `window()` returns all promoted nodes for providers. When token budget exceeded, demotes nodes by priority: full → chunk → skeleton (oldest first). Supports file persistence (JSONL) for demoted nodes.
-- **`processor.py`** — `GranularityProcessor` implementations: `DocumentProcessor` (long docs: skeleton+chunks+full), `ToolOutputProcessor` (short output→full only; long→skeleton+chunks), `HistoryProcessor` (each turn as a chunk, promoted by default). All accept optional `outline_fn` for LLM-generated skeletons.
-- **`context.py`** — `ContextEngine`: iterates providers, calls `get()`, composes pieces into final prompt string. `ContextSlot` describes each provider's scope and enables/disables injection. `ComposeStrategy` controls concatenation (default: double-newline join, skip empty). `SlotScope` types: task, state, memory, tool, history, child.
-- **`providers.py`** — Static providers (read from state dict): `UserPromptProvider`, `StateProvider`, `AvailableToolsProvider`. Dynamic providers (read from `ContextStore.window()`): `ToolRespondProvider`, `ExploredContextProvider`, `HistoryProvider`. Providers only format — they never store or make management decisions.
+- **`strategy.py`** — `ContextStrategy` ABC with pipeline composition via `|` operator. `ContextStrategy` reads from memory, `ItemStrategy` transforms existing items. Built-in strategies: `FullHistoryStrategy`, `LatestOnlyStrategy`, `RecencyStrategy(keep_last)`, `TokenBudgetStrategy(token_limit)`, `SummarizeStrategy(threshold, outline_fn)`, `FilterByToolStrategy(tool_names)`. `StrategyPipeline` chains strategies — first reads memory, subsequent ones transform the item list.
+- **`providers.py`** — Two provider types. **Static** (read from state dict): `UserPromptProvider`, `StateProvider`, `AvailableToolsProvider`. **Dynamic** (`MemoryProvider` subclasses, read from ShortTermMemory via strategy): `ToolOutputProvider`, `HistoryProvider`. Each `MemoryProvider` takes `(memory, field, strategy)` — the strategy controls how memory content becomes `ContextItem` objects. Providers only format — they never store or make management decisions.
+- **`context.py`** — `ContextEngine`: iterates providers, calls `get()`, composes pieces into final prompt string. Holds a reference to `ShortTermMemory` (exposed via `get_memory()`). Provider order in the constructor = injection order in the prompt.
 
 ### Memory System (`domain/memory/`)
-Stores tool execution outputs for the current session.
+Stores tool execution outputs and agent history for the current session.
 
-- **`short/short_term_memory.py`** — `ShortTermMemory` abstract interface: `store()`, `get()`, `get_summary_list()`, round-based caching (`begin_round`/`store_round`/`get_round`).
-- **`short/default_short_term_memory.py`** — `DefaultShortTermMemory`: in-memory dict-based implementation. `_store` holds raw outputs per tool, `_round_cache` holds current-round outputs for `$ref:tool_name#0` resolution. No truncation or compression.
+- **`short/short_term_memory.py`** — `ShortTermMemory` abstract interface with typed `memory_field` = `Literal["tool_respond", "agent_history", "plan"]`. Methods: `store()`, `get()`, `count()`, `all_keys()`, `keys_by_field()`, `clear()`.
+- **`short/default_short_term_memory.py`** — `DefaultShortTermMemory`: in-memory nested-dict implementation `_store[field][key] → list[str]`. Index=0 returns latest, index≥1 returns Nth historical call.
 
 ### Infrastructure Layer (`infra/`)
 Concrete implementations and external integrations.
 
 - **`eventbus.py`** — `EventBus` (singleton): async pub/sub with middleware chain and glob-pattern subscriptions (`fnmatch`). `publish_one()` for single-handler scenarios.
-- **`config.py`** — Central wiring: creates `EventBus`, `ToolEventFactory`, `LLM_Client`, `DefaultShortTermMemory`, `ContextStore` (with registered processors), `ContextEngine` (with all providers), and `agent_dict`. Also defines `make_outline_fn()` for LLM-based skeleton generation. All singletons are imported from here.
+- **`config.py`** — Central wiring: creates `EventBus`, `ToolEventFactory`, `LLM_Client`, `DefaultShortTermMemory`, `ContextEngine` (with all providers), and `agent_dict`. All singletons are imported from here. Provider+strategy composition happens here (e.g., `ToolOutputProvider(memory, "tool_respond", FullHistoryStrategy() | RecencyStrategy(10) | TokenBudgetStrategy(10000))`).
 - **`LLM/LLM_infra.py`** — `LLM_Client`: thin wrapper over `AsyncOpenAI` supporting GLM, DeepSeek, MiniMax providers. Streaming by default.
 - **`tool/tool_bind.py`** — `Tool_bind` (singleton): decorator-based event↔handler binding. `@on_tool.on(event)` for exact match, `@on_tool.on_pattern("*.suffix")` for glob match, `@on_tool.use()` for middleware.
 - **`tool/tools_attach_methods.py`** — All tool implementations registered via `@on_tool.on()`. Includes logging middleware, success/fail pattern handlers that call back to `AgentBase.on_tool_call()`, and concrete tool functions.
@@ -59,23 +57,30 @@ Currently empty (`application/agent/` exists but is unused).
 4. Handler receives `kwargs` (unpacked from `Event.payload`), returns an `Event` via `factory.tool("name").succeeded(respond)` or `.failed(respond)`.
 
 ### Adding a new context provider
-1. Define a `ContextSlot` in `domain/context/providers.py` with name, description, and scope.
-2. Implement a `ContextProvider` subclass with the slot as class attribute and `get(state) -> list[str]`.
+1. For static providers: subclass `ContextProvider`, implement `get(state) -> list[str]`.
+2. For dynamic providers: subclass `MemoryProvider`, pass `(memory, field, strategy)` to `__init__`, implement `get(state) -> list[str]` using `self._get_items(state)`.
 3. Register the provider in `infra/config.py` `providers` list (order = injection order).
+
+### Composing strategies
+Strategies chain with `|`: `FullHistoryStrategy() | RecencyStrategy(10) | TokenBudgetStrategy(10000)`. First strategy reads from memory, subsequent `ItemStrategy` subclasses transform the item list. Custom strategies: extend `ContextStrategy` (reads memory) or `ItemStrategy` (transforms items only).
+
+### Adding a new memory field
+1. Add the field name to the `memory_field` `Literal` type in `domain/memory/short/short_term_memory.py`.
+2. Pass it to `DefaultShortTermMemory(fields=...)` in `infra/config.py`.
+3. Use it in a `MemoryProvider(field=...)`.
 
 ### Event flow for tool execution
 1. Agent `_think()` → `ContextEngine.build(state)` constructs prompt → LLM decision with `tool_calls`
-2. `_execute_tools()` → resolves `$ref` dependencies, runs no-dep calls in parallel first → `factory.tool(name).emit_called(arguments)` → EventBus publishes `*.called`
+2. `_execute_tools()` → `factory.tool(name).emit_called(arguments)` → EventBus publishes `*.called`
 3. Handler executes, returns `*.succeeded` or `*.failed` event
 4. Pattern-matched handlers (`*.succeeded`, `*.failed`) call `agent.on_tool_call()` to update state
-5. `on_tool_call()` stores output in `ShortTermMemory`, writes to `ContextStore` (scope="memory"), updates `tool_history`
+5. `on_tool_call()` stores output in `ShortTermMemory` (via `context_engine.get_memory().store()`), updates `tool_history`
 6. `_pending_tools` decremented; `_tool_done` event set when all complete
 7. Agent loop continues — next `_think()` sees updated context via `ContextEngine`
 
 ### `$ref` dependency resolution
 - LLM outputs `$ref:tool_name#index` as argument values to reference prior tool outputs
-- `index=0` → current round output (from `memory.get_round()`), falls back to latest historical
-- `index≥1` → specific historical call (from `memory.get()`)
+- `index=0` → latest output, `index≥1` → Nth historical call
 - Tool calls with `$ref` args execute after their dependencies finish
 
 ### Singleton pattern
