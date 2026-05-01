@@ -33,12 +33,12 @@ memory = DefaultShortTermMemory(["tool_respond", "agent_history", "plan"])
 
 # 上下文提供类
 providers = [
-    UserPromptProvider(),
-    StateProvider(),
-    PlanProvider(),
     HistoryProvider(memory, "agent_history", FullHistoryStrategy()),
     ToolOutputProvider(memory, "tool_respond", FullHistoryStrategy() | RecencyStrategy(10) | ChunkToFileStrategy("./mid",4000,4000)),
     AvailableToolsProvider(["system", "search", "memory", "write_agent","plan"]),
+    UserPromptProvider(),
+    StateProvider(),
+    PlanProvider(),
 ]
 
 # ── 上下文管理类 ──────────────────────────────────────────────────

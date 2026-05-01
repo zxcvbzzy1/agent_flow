@@ -418,8 +418,10 @@ def update_plan(**kwargs) -> Event:
     try:
         agent_id = kwargs.get("agent_id", "")
         step_id  = kwargs.get("step_id", "")
-        status   = kwargs.get("status", "")
-        note     = kwargs.get("note", "")
+        title    = kwargs.get("title") or None
+        detail   = kwargs.get("detail") or None
+        status   = kwargs.get("status") or None
+        note     = kwargs.get("note") or None
 
         agent    = agent_dict.get(agent_id)
         plan_dict = agent.states.get("plan", {})
@@ -435,7 +437,7 @@ def update_plan(**kwargs) -> Event:
 
         # 从 state 重建 Plan 对象
         plan = _dict_to_plan(plan_dict)
-        step = plan.update_step(step_id, status, note)
+        step = plan.update_step(step_id, title=title, detail=detail, status=status, note=note)
 
         if step is None:
             respond = Tool_respond(
@@ -462,6 +464,7 @@ def update_plan(**kwargs) -> Event:
         return factory.tool("update_plan").succeeded(respond)
 
     except Exception as e:
+        print("what!!!!")
         respond = Tool_respond(
             agent_id=kwargs.get("agent_id", ""),
             name="update_plan",

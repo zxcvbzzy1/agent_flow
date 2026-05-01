@@ -156,8 +156,8 @@ class PlanProvider(ContextProvider):
             )
             if next_step:
                 parts.append(
-                    f"▶ 下一步：[{next_step['step_id']}] {next_step['title']}\n"
-                    f"请调用对应工具执行，完成后调用 update_plan 更新状态。"
+                    f"▶ 目前所在步骤：[{next_step['step_id']}] {next_step['title']}\n"
+                    f"请调用对应工具执行或调用 update_plan 更新状态。"
                 )
             else:
                 parts.append("所有步骤已处理，请调用 finish_plan 完成计划。")
@@ -179,7 +179,7 @@ class ToolOutputProvider(MemoryProvider):
             parts.append(f"### {item.source}\n{item.content}")
             if item.metadata.get("summarized"):
                 parts.append(
-                    f'（内容已压缩，调用 explore_context("{item.source}") 获取原文）'
+                    f'（内容已压缩）'
                 )
         return ["\n\n".join(parts)]
 
