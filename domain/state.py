@@ -46,11 +46,15 @@ class Plan:
                 detail=s.get("detail", ""),
             ))
 
-    def update_step(self, step_id: str, status: PlanStatus, note: str = "") -> PlanStep | None:
+    def update_step(self, step_id: str, title: str | None = None,
+                    detail: str | None = None, status: PlanStatus | None = None,
+                    note: str | None = None) -> PlanStep | None:
         for step in self.steps:
             if step.step_id == step_id:
-                step.status     = status
-                step.note       = note
+                if title  is not None: step.title  = title
+                if detail is not None: step.detail = detail
+                if status is not None: step.status = status
+                if note   is not None: step.note   = note
                 step.updated_at = time.time()
                 return step
         return None

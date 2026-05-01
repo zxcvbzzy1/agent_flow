@@ -195,11 +195,6 @@ class AgentBase(ABC):
   "is_finished": false
 }}
 
-## 工具结果引用
-如需使用已执行工具的输出，用 "$ref:工具名#次数" 作为参数值（次数从1开始）。
-引用本轮刚执行的工具时次数填0，如 "$ref:query_tool_respond#0"。
-有引用依赖的工具会在被引用工具完成后自动执行。
-
 ## 任务完成时输出
 {{
   "think": "...",
@@ -214,11 +209,13 @@ class AgentBase(ABC):
 
     def _parse_decision(self, raw: str) -> AgentDecision:
         text = raw.strip()
-        if text.startswith("```"):
-            text = "\n".join(
-                l for l in text.splitlines()
-                if not l.strip().startswith("```")
-            )
+
+        match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+        if match:
+            text = match.group(1).strip()
+        else:
+            pass
+
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
@@ -226,15 +223,16 @@ class AgentBase(ABC):
 
         tool_calls = [
             ToolCall(
-                tool_name = tc["tool_name"],
-                arguments = tc.get("arguments", {}),
-                reasoning = tc.get("reasoning", ""),
+                tool_name=tc["tool_name"],
+                arguments=tc.get("arguments", {}),
+                reasoning=tc.get("reasoning", ""),
             )
             for tc in data.get("tool_calls", [])
         ]
+
         return AgentDecision(
-            tool_calls    = tool_calls,
-            think         = data.get("think", ""),
-            is_finished   = data.get("is_finished", False),
-            finish_reason = data.get("finish_reason", ""),
+            tool_calls=tool_calls,
+            think=data.get("think", ""),
+            is_finished=data.get("is_finished", False),
+            finish_reason=data.get("finish_reason", ""),
         )

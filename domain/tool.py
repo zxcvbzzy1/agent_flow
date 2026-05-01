@@ -131,6 +131,14 @@ UPDATE_PLAN = Tool(
                 "type": "string",
                 "description": "要更新的步骤 ID"
             },
+            "title": {
+                "type": "string",
+                "description": "新标题"
+            },
+            "detail": {
+                "type": "string",
+                "description": "新详情"
+            },
             "status": {
                 "type": "string",
                 "description": "步骤状态",
@@ -141,7 +149,7 @@ UPDATE_PLAN = Tool(
                 "description": "备注，如失败原因或完成说明"
             }
         },
-        "required": ["step_id", "status"]
+        "required": ["step_id"]
     },
     field="plan"
 )
