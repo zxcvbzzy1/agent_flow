@@ -103,68 +103,6 @@ class AvailableToolsProvider(ContextProvider):
 
 
 
-class PlanProvider(ContextProvider):
-    """当前计划状态，供 Agent 决策下一步。"""
-    name = "plan"
-
-    def get(self, state: dict) -> list[str]:
-        plan_dict = state.get("plan", {})
-
-        # 无计划时，提示 Agent 先制定计划
-        if not plan_dict or not plan_dict.get("steps"):
-            return ["请决定下一步调用哪个工具，或输出 is_finished=true。"]
-
-        steps    = plan_dict.get("steps", [])
-        finished = plan_dict.get("finished", False)
-        summary  = plan_dict.get("summary", "")
-
-        # 状态符号映射
-        STATUS_ICON = {
-            "pending":     "⬜",
-            "in_progress": "🔄",
-            "done":        "✅",
-            "failed":      "❌",
-            "skipped":     "⏭️",
-        }
-
-        parts = ["## 当前计划"]
-
-        # 统计进度
-        total        = len(steps)
-        done_count   = sum(1 for s in steps if s["status"] == "done")
-        failed_count = sum(1 for s in steps if s["status"] == "failed")
-        parts.append(f"进度：{done_count}/{total} 已完成"
-                     + (f",{failed_count} 个失败" if failed_count else ""))
-
-        # 步骤列表
-        parts.append("")
-        for s in steps:
-            icon   = STATUS_ICON.get(s["status"], "⬜")
-            note   = f"  ↳ {s['note']}" if s.get("note") else ""
-            detail = f"\n     {s['detail']}" if s.get("detail") else ""
-            parts.append(f"{icon} [{s['step_id']}] {s['title']}{detail}{note}")
-
-        # 下一步提示
-        parts.append("")
-        if finished:
-            parts.append(f"计划已全部完成。\n总结：{summary}")
-        else:
-            # 找到第一个 pending 或 in_progress 的步骤
-            next_step = next(
-                (s for s in steps if s["status"] in ("pending", "in_progress")),
-                None,
-            )
-            if next_step:
-                parts.append(
-                    f"▶ 目前所在步骤：[{next_step['step_id']}] {next_step['title']}\n"
-                    f"请调用对应工具执行或调用 update_plan 更新状态。"
-                )
-            else:
-                parts.append("所有步骤已处理，请调用 finish_plan 完成计划。")
-
-        return ["\n".join(parts)]
-
-
 # 动态provider
 
 class ToolOutputProvider(MemoryProvider):
@@ -194,7 +132,5 @@ class HistoryProvider(MemoryProvider):
         parts = ["## 对话历史"]
         parts += [item.content for item in items]
         return ["\n".join(parts)]
-
-
 
 

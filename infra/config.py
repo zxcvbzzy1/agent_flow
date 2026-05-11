@@ -1,6 +1,7 @@
 import os
 
 from domain.agent_base import AgentBase
+from domain.agent.plan.providers import ExecutorStatusProvider
 from domain.context.context import ContextEngine
 from domain.context.providers import *
 from domain.context.strategy import FullHistoryStrategy, LatestOnlyStrategy, RecencyStrategy, TokenBudgetStrategy
@@ -29,14 +30,22 @@ llm_client = LLM_Client(
 
 # 个性化设置
 # 记忆
-memory = DefaultShortTermMemory(["tool_respond", "agent_history", "plan"])
+memory = DefaultShortTermMemory(["tool_respond", "agent_history"])
 
-# 上下文提供类
+# ReACT执行者上下文提供类
 providers = [
     UserPromptProvider(),
     StateProvider(),
-    PlanProvider(),
-    AvailableToolsProvider(["system", "search", "memory", "write_agent","plan"]),
+    AvailableToolsProvider(["system", "search", "memory", "write_agent"]),
+    HistoryProvider(memory, "agent_history", FullHistoryStrategy()),
+    ToolOutputProvider(memory, "tool_respond", FullHistoryStrategy() | RecencyStrategy(10) | ChunkToFileStrategy("./mid",4000,4000)),
+]
+
+# PlanAgent编排上下文提供类
+plan_providers = [
+    UserPromptProvider(),
+    StateProvider(),
+    ExecutorStatusProvider(),
     HistoryProvider(memory, "agent_history", FullHistoryStrategy()),
     ToolOutputProvider(memory, "tool_respond", FullHistoryStrategy() | RecencyStrategy(10) | ChunkToFileStrategy("./mid",4000,4000)),
 ]
@@ -44,5 +53,10 @@ providers = [
 # ── 上下文管理类 ──────────────────────────────────────────────────
 engine = ContextEngine(
     providers=providers,
+    memory=memory,
+)
+
+plan_engine = ContextEngine(
+    providers=plan_providers,
     memory=memory,
 )
