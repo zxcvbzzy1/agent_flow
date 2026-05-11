@@ -8,7 +8,7 @@ from infra.eventbus import EventBus
 
 CallBack = Callable[[Event,Callable], Any]
 
-class Tool_bind():
+class On_bind():
 
     _instance = None
     _instance_bool = False

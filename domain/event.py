@@ -159,10 +159,7 @@ class ToolEventFactory:
  
     用法：
         动态构建
-            factory= ToolEventFactory(prefix="infra")._build()
-        静态构建
-            factory = ToolEventFactory(prefix="infra").export_class("./domain/tools/static_tools.py")
-        
+            factory= ToolEventFactory(prefix="infra")._build()  
         event   = factory.tool("rag_search").called({"query": "AI趋势"})
         factory.export_class("generated_tool_events.py")
     """
@@ -216,11 +213,10 @@ class ToolEventFactory:
         for v in result.values():
             v.sort()
         return result
-  
-
 
     # ── 构建注册工具的ToolEventSpec事件类型─────────────────────────────────────────────────────────
     def _build(self) -> None:
+        """按已有的TOOL类注册ToolEventSpec事件类型"""
         for tool in Tool.get_all_tools():
             field_seg = _normalize(tool.field) if tool.field else "unknown"
             tool_seg  = _to_dot_name(tool.name)
@@ -237,105 +233,29 @@ class ToolEventFactory:
             self._specs[tool.name] = spec
         return self
             
-    def export_class(self,bus:EventBusPort, filepath: str = "generated_tool_events.py") -> None:
-        """
-        静态导出当前所有注册工具的事件工厂类，包含基于 Literal 的代码提示和 Schema 文档。
-        """
-        if not self._specs:
-            self._build()
-
-        lines = [
-            '# ---------------------------------------------------------------------------',
-            '# 自动生成的工具事件工厂代码，请勿手动修改',
-            '# ---------------------------------------------------------------------------',
-            'from typing import Any, Literal, overload',
-            'from domain.event import ToolEventFactory, ToolEventSpec, Event, EventBusPort',
-            '',
-            'class StaticToolEventFactory(ToolEventFactory):',
-            '    _bus: EventBusPort = None',
-            '',
-            '    @classmethod',
-            '    def _resigister_bus(self, bus: EventBusPort):',
-            '        """注入全局事件总线实例"""',
-            '        for spec in self._specs.values():',
-            '            spec.set_bus(bus)',
-            '        return self',
-            '',
-            '    def __init__(self, prefix: str = "") -> None:',
-            '        super().__init__(prefix=prefix)',
-            '        self._specs = {'
-        ]
-
-        # 1. 静态构建字典，避免运行时反射
-        for tool_name, spec in self._specs.items():
-            schema_str = json.dumps(spec.tool_input_schema, ensure_ascii=False)
-            events_str = json.dumps(spec._events, ensure_ascii=False)
-            
-            lines.append(f'            "{tool_name}": ToolEventSpec(')
-            lines.append(f'                tool_name="{spec.tool_name}",')
-            lines.append(f'                tool_field="{spec.tool_field}",')
-            lines.append(f'                tool_input_schema={schema_str},')
-            lines.append(f'                _events={events_str}')
-            lines.append( '            ),')
-            
-        lines.append('        }')
-        lines.append('')
-
-        # 2. 生成带 Schema 提示的 @overload
-        for tool_name, spec in self._specs.items():
-            # 将 Schema 格式化为漂亮的 JSON 字符串，方便在 IDE 悬停时阅读
-            schema_pretty = json.dumps(spec.tool_input_schema, ensure_ascii=False, indent=4)
-            # 处理缩进以适应 docstring
-            schema_indented = "\n".join(f"        {line}" for line in schema_pretty.split("\n"))
-
-            lines.append('    @overload')
-            lines.append(f'    def tool(self, tool_name: Literal["{tool_name}"]) -> ToolEventSpec:')
-            lines.append('        """')
-            lines.append(f'        获取工具 `{tool_name}` 的事件描述符。')
-            lines.append('        ')
-            lines.append('        **输入参数 Schema 提示**:')
-            lines.append('        ```json')
-            lines.append(f'{schema_indented}')
-            lines.append('        ```')
-            lines.append('        """')
-            lines.append('        ...')
-            lines.append('')
-
-        # 3. 添加默认重载和实际实现
-        lines.append('    @overload')
-        lines.append('    def tool(self, tool_name: str) -> ToolEventSpec: ')
-        lines.append('        """')
-        lines.append('        不支持的工具名称。')
-        lines.append('        """')
-        lines.append('        ...')
-        lines.append('')
-        lines.append('    def tool(self, tool_name: str) -> ToolEventSpec:')
-        lines.append('        """运行时的实际调用逻辑"""')
-        lines.append('        return super().tool(tool_name)')
-        lines.append('')
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-        
-        print(f"✅ 静态事件工厂类已成功导出至: {filepath}")
-
-        module_name = os.path.splitext(os.path.basename(filepath))[0]
-        # --- 核心改进：清理旧缓存 ---
-        if module_name in sys.modules:
-            del sys.modules[module_name]
-        # --------------------------
-        spec = importlib.util.spec_from_file_location(module_name, filepath)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)
-
-        # 返回生成的类
-        return module.StaticToolEventFactory(prefix=self._prefix)
-
     def _resigister_bus(self, bus: EventBusPort):
+        """为已注册ToolEventSpec事件类型添加事件总线实例，供事件生成时发布事件使用。"""
         for spec in self._specs.values():
             spec.set_bus(bus)
         return self
+    
+    def _build_and_register_list(self,tool_list: list[Tool], bus: EventBusPort):
+        """添加新的工具并构建事件类型，注册事件总线实例"""
+        for tool in tool_list:
+            field_seg = _normalize(tool.field) if tool.field else "unknown"
+            tool_seg  = _to_dot_name(tool.name)
+            base      = f"{self._prefix}{field_seg}.{tool_seg}"
+            spec = ToolEventSpec(
+                tool_name=tool.name,
+                tool_field=tool.field,
+                tool_input_schema=tool.input_schema,
+            )
+            for suffix in self._SUFFIXES:
+                spec._events[suffix] = f"{base}.{suffix}"
+            spec.set_bus(bus)
+            self._specs[tool.name] = spec
+        return self
+
     
 
 def _normalize(s: str) -> str:
