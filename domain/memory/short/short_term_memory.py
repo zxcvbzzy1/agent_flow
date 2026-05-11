@@ -6,7 +6,6 @@ from typing import Literal
 memory_field = Literal[
     "tool_respond",
     "agent_history",
-    "plan"
 ]
 
 

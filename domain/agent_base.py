@@ -121,12 +121,12 @@ class AgentBase(ABC):
             {"role": "system", "content": self._build_agent_prompt()},
             {"role": "user",   "content": context},
         ]
-        print(context)
+        # print(context)
         response = await self._llm.chat(messages)
         decision = self._parse_decision(response)
 
         if decision.think:
-            self.states["think"] += decision.think
+            self.states["think"] += decision.think + "\n"
 
         return decision
 

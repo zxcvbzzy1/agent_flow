@@ -12,6 +12,7 @@ class PlanStep:
     step_id:    str
     title:      str
     detail:     str         = ""
+    executor_id: str        = ""
     status:     PlanStatus  = "pending"
     note:       str         = ""
     created_at: float       = field(default_factory=time.time)
@@ -22,6 +23,7 @@ class PlanStep:
             "step_id":    self.step_id,
             "title":      self.title,
             "detail":     self.detail,
+            "executor_id": self.executor_id,
             "status":     self.status,
             "note":       self.note,
             "created_at": self.created_at,
@@ -44,6 +46,7 @@ class Plan:
                 step_id=s.get("step_id", str(uuid.uuid4())[:8]),
                 title=s.get("title", ""),
                 detail=s.get("detail", ""),
+                executor_id=s.get("executor_id", ""),
             ))
 
     def update_step(self, step_id: str, title: str | None = None,
@@ -114,6 +117,7 @@ def _dict_to_plan(plan_dict: dict) -> Plan:
             step_id=s["step_id"],
             title=s["title"],
             detail=s.get("detail", ""),
+            executor_id=s.get("executor_id", ""),
             status=s.get("status", "pending"),
             note=s.get("note", ""),
             created_at=s.get("created_at", 0),
@@ -123,4 +127,3 @@ def _dict_to_plan(plan_dict: dict) -> Plan:
     plan.finished = plan_dict.get("finished", False)
     plan.summary  = plan_dict.get("summary", "")
     return plan
-
