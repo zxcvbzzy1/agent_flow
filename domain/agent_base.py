@@ -73,13 +73,11 @@ class AgentBase(ABC):
         self.states_manage  = Agent_state()
         self.states         = self.states_manage.get_state()
         self.tool_factory   = ToolEventFactory(prefix="infra")
-        self.work_path      = "./temp/"
+        self.work_path      = "/Users/zxcvbzzy1/Desktop/项目/agent_flow/temp"  # 默认工作目录
         self.context_engine = context
 
         self._tool_done     = asyncio.Event()
         self._pending_tools = 0
-        self._REF_PATTERN   = re.compile(r"\$ref:[^#]+#\d+")
-
         AgentBase._instance_list[self.id] = self
 
     @classmethod
@@ -110,6 +108,8 @@ class AgentBase(ABC):
             self.states["is_finished"]   = True
             self.states["finish_reason"] = decision.finish_reason
             return True
+        
+        
 
         return False
 
@@ -166,6 +166,10 @@ class AgentBase(ABC):
         else:
             s["last_tool_ok"] = False
             s["retry"]       += 1
+            memory = self.context_engine.get_memory()
+            memory.store("tool_respond", tool_name, respond)
+            s["tool_history"].append(tool_name)
+
 
         self._pending_tools -= 1
         if self._pending_tools <= 0:

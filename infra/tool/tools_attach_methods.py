@@ -4,21 +4,21 @@ from domain.agent_base import AgentBase
 from domain.event import Tool_respond, Event
 from domain.state import Plan, PlanStep
 from infra.LLM.LLM_infra import LLM_Client, LLM_Model_Provider
-from infra.tool.tool_bind import Tool_bind
+from infra.event_bind import On_bind
 import os
 from pathlib import Path
 from infra.config import factory,agent_dict,llm_client
 
 
 # factory = StaticToolEventFactory(prefix="infra") #编写时方便
-on_tool = Tool_bind()
+on_tool = On_bind()
 
 
 # 中间件
 @on_tool.use()
 async def logging_middleware(event: Event, call_next):
     print(f"[LOG] 事件触发: {event.name}")
-    print(f"{event.name}负载为:\n {event.payload}")
+    # print(f"{event.name}负载为:\n {event.payload}")
 
     try:
         result = await call_next()
@@ -132,208 +132,6 @@ def _dict_to_plan(plan_dict: dict) -> Plan:
     return plan
 
 
-
-# 系统工具
-@on_tool.on(factory.tool("read_files").called())
-def read_files(**kwargs) -> Event:
-    """
-    读取系统目录中的文件（包括用户上传文件）。
-    
-    Args:
-        kwargs: 包含 file_path 列表的字典
-        
-    Returns:
-        Event: 工具执行结果事件，负载为 Tool_respond 格式
-    """
-    try:
-        file_paths = kwargs.get("file_path", [])
-        agent_id = kwargs.get("agent_id", "")
-        
-        if not file_paths:
-            respond = Tool_respond(
-                agent_id=agent_id,
-                name="read_files",
-                success=False,
-                respond="错误：未提供文件路径"
-            )
-            return factory.tool("read_files").failed(respond)
-        
-        results = {}
-        errors = []
-        
-        for file_path in file_paths:
-            try:
-                path = Path(file_path)
-                
-                # 安全检查：防止路径遍历攻击
-                base_dir = Path.cwd()
-                resolved_path = path.resolve()
-                
-                if not str(resolved_path).startswith(str(base_dir)):
-                    errors.append(f"禁止访问路径: {file_path} (超出工作目录范围)")
-                    continue
-                
-                # 检查文件是否存在
-                if not resolved_path.exists():
-                    errors.append(f"文件不存在: {file_path}")
-                    continue
-                
-                # 检查是否为文件
-                if not resolved_path.is_file():
-                    errors.append(f"路径不是文件: {file_path}")
-                    continue
-                
-                # 读取文件内容
-                try:
-                    content = resolved_path.read_text(encoding='utf-8')
-                    results[file_path] = {
-                        "success": True,
-                        "content": content,
-                        "size": len(content),
-                        "path": str(resolved_path)
-                    }
-                except UnicodeDecodeError:
-                    # 如果是二进制文件，尝试以二进制模式读取
-                    content_bytes = resolved_path.read_bytes()
-                    results[file_path] = {
-                        "success": True,
-                        "content": f"<二进制文件，大小: {len(content_bytes)} bytes>",
-                        "size": len(content_bytes),
-                        "path": str(resolved_path),
-                        "is_binary": True
-                    }
-                    
-            except PermissionError:
-                errors.append(f"权限不足，无法读取: {file_path}")
-            except Exception as e:
-                errors.append(f"读取文件失败 {file_path}: {str(e)}")
-        
-        # 构建响应
-        if results:
-            respond = Tool_respond(
-                agent_id=agent_id,
-                name="read_files",
-                success=True,
-                respond={
-                    "message": f"成功读取 {len(results)} 个文件",
-                    "files": results,
-                    "errors": errors if errors else None
-                }
-            )
-            return factory.tool("read_files").succeeded(respond)
-        else:
-            respond = Tool_respond(
-                agent_id=agent_id,
-                name="read_files",
-                success=False,
-                respond={
-                    "message": "所有文件读取失败",
-                    "errors": errors
-                }
-            )
-            return factory.tool("read_files").failed(respond)
-            
-    except Exception as e:
-        agent_id = kwargs.get("agent_id", "")
-        respond = Tool_respond(
-            agent_id=agent_id,
-            name="read_files",
-            success=False,
-            respond=f"工具执行异常: {str(e)}"
-        )
-        return factory.tool("read_files").failed(respond)
-
-
-@on_tool.on(factory.tool("write_files").called())
-def write_files(**kwargs) -> Event:
-    """
-    将内容写入系统目录中的文件。
-    
-    Args:
-        kwargs: 包含 file_path 和 content 的字典
-        
-    Returns:
-        Event: 工具执行结果事件，负载为 Tool_respond 格式
-    """
-    try:
-        file_path = kwargs.get("file_path")
-        content = kwargs.get("content", "")
-        agent_id = kwargs.get("agent_id", "")
-        
-        if not file_path:
-            respond = Tool_respond(
-                agent_id=agent_id,
-                name="write_files",
-                success=False,
-                respond="错误：未提供文件路径"
-            )
-            return factory.tool("write_files").failed(respond)
-        
-        if content is None:
-            content = ""
-        
-        path = Path(file_path)
-        
-        # 安全检查：防止路径遍历攻击
-        base_dir = Path.cwd()
-        resolved_path = path.resolve()
-        
-        if not str(resolved_path).startswith(str(base_dir)):
-            respond = Tool_respond(
-                agent_id=agent_id,
-                name="write_files",
-                success=False,
-                respond=f"禁止写入路径: {file_path} (超出工作目录范围)"
-            )
-            return factory.tool("write_files").failed(respond)
-        
-        # 确保父目录存在
-        resolved_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # 写入文件
-        try:
-            resolved_path.write_text(content, encoding='utf-8')
-            
-            respond = Tool_respond(
-                agent_id=agent_id,
-                name="write_files",
-                success=True,
-                respond={
-                    "message": "文件写入成功",
-                    "file_path": str(resolved_path),
-                    "content_size": len(content),
-                    "encoding": "utf-8"
-                }
-            )
-            return factory.tool("write_files").succeeded(respond)
-            
-        except PermissionError:
-            respond = Tool_respond(
-                agent_id=agent_id,
-                name="write_files",
-                success=False,
-                respond=f"权限不足，无法写入: {file_path}"
-            )
-            return factory.tool("write_files").failed(respond)
-            
-        except OSError as e:
-            respond = Tool_respond(
-                agent_id=agent_id,
-                name="write_files",
-                success=False,
-                respond=f"文件系统错误: {str(e)}"
-            )
-            return factory.tool("write_files").failed(respond)
-            
-    except Exception as e:
-        agent_id = kwargs.get("agent_id", "")
-        respond = Tool_respond(
-            agent_id=agent_id,
-            name="write_files",
-            success=False,
-            respond=f"工具执行异常: {str(e)}"
-        )
-        return factory.tool("write_files").failed(respond)
 
 # plan工具
 @on_tool.on(factory.tool("write_plan").called())
@@ -534,44 +332,6 @@ def finish_plan(**kwargs) -> Event:
         return factory.tool("finish_plan").failed(respond)
 
 
-
-
-# memory 工具实现
-# @on_tool.on(factory.tool("query_tool_respond").called())
-# async def query_tool_respond(**kwargs):
-#     agent_id = kwargs.get("agent_id")
-#     agent = agent_dict.get(agent_id)
-#     tool_name = kwargs.get("tool_name")
-#     index = kwargs.get("index", None)
-#     if agent is None:
-#         respond = Tool_respond(
-#             name="query_tool_respond", agent_id=agent_id,
-#             success=False, respond=f"Agent {agent_id} 不存在"
-#         )
-#         return factory.tool("query_tool_respond").failed(respond)
-
-#     store = agent.context_engine.get_store()
-
-#     if index is None or index == 0:
-#         source_key = store.latest_source_key(tool_name)
-#     else:
-#         source_key = f"tool:{tool_name}#{index}"
-
-#     result = store.query(source_key) if source_key else None
-
-#     if result is None:
-#         respond = Tool_respond(
-#             name="query_tool_respond", agent_id=agent_id,
-#             success=False,
-#             respond=f"未找到 '{tool_name}' 的执行结果"
-#         )
-#         return factory.tool("query_tool_respond").failed(respond)
-
-#     respond = Tool_respond(
-#         name="query_tool_respond", agent_id=agent_id,
-#         success=True, respond=result
-#     )
-#     return factory.tool("query_tool_respond").succeeded(respond)
 
 
 # ... write agent 工具实现...

@@ -9,7 +9,6 @@ class DefaultShortTermMemory(ShortTermMemory):
     存储结构
     --------
     _store       : {tool_name: [raw_str, ...]}   原始输出列表，按调用顺序追加
-    _round_cache : {tool_name: raw_str}           本轮工具输出缓存，供跨步骤 $ref 引用
     """
 
     def __init__(self,fields:memory_field) -> None:
