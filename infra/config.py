@@ -1,7 +1,7 @@
 import os
 
 from domain.agent_base import AgentBase
-from domain.agent.plan.providers import ExecutorStatusProvider
+from domain.agent.plan.providers import ExecutorStatusProvider, PlanObservationProvider
 from domain.context.context import ContextEngine
 from domain.context.providers import *
 from domain.context.strategy import FullHistoryStrategy, LatestOnlyStrategy, RecencyStrategy, TokenBudgetStrategy
@@ -46,6 +46,7 @@ plan_providers = [
     UserPromptProvider(),
     StateProvider(),
     ExecutorStatusProvider(),
+    PlanObservationProvider(),
     HistoryProvider(memory, "agent_history", FullHistoryStrategy()),
     ToolOutputProvider(memory, "tool_respond", FullHistoryStrategy() | RecencyStrategy(10) | ChunkToFileStrategy("./mid",4000,4000)),
 ]

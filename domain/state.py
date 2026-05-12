@@ -13,6 +13,8 @@ class PlanStep:
     title:      str
     detail:     str         = ""
     executor_id: str        = ""
+    depends_on: list[str]   = field(default_factory=list)
+    observation: str        = ""
     status:     PlanStatus  = "pending"
     note:       str         = ""
     created_at: float       = field(default_factory=time.time)
@@ -24,6 +26,8 @@ class PlanStep:
             "title":      self.title,
             "detail":     self.detail,
             "executor_id": self.executor_id,
+            "depends_on":  self.depends_on,
+            "observation": self.observation,
             "status":     self.status,
             "note":       self.note,
             "created_at": self.created_at,
@@ -47,17 +51,25 @@ class Plan:
                 title=s.get("title", ""),
                 detail=s.get("detail", ""),
                 executor_id=s.get("executor_id", ""),
+                depends_on=s.get("depends_on", []),
+                observation=s.get("observation", ""),
             ))
 
     def update_step(self, step_id: str, title: str | None = None,
                     detail: str | None = None, status: PlanStatus | None = None,
-                    note: str | None = None) -> PlanStep | None:
+                    note: str | None = None,
+                    executor_id: str | None = None,
+                    depends_on: list[str] | None = None,
+                    observation: str | None = None) -> PlanStep | None:
         for step in self.steps:
             if step.step_id == step_id:
                 if title  is not None: step.title  = title
                 if detail is not None: step.detail = detail
                 if status is not None: step.status = status
                 if note   is not None: step.note   = note
+                if executor_id is not None: step.executor_id = executor_id
+                if depends_on is not None: step.depends_on = depends_on
+                if observation is not None: step.observation = observation
                 step.updated_at = time.time()
                 return step
         return None
@@ -118,6 +130,8 @@ def _dict_to_plan(plan_dict: dict) -> Plan:
             title=s["title"],
             detail=s.get("detail", ""),
             executor_id=s.get("executor_id", ""),
+            depends_on=s.get("depends_on", []),
+            observation=s.get("observation", ""),
             status=s.get("status", "pending"),
             note=s.get("note", ""),
             created_at=s.get("created_at", 0),

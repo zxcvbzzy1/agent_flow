@@ -75,7 +75,6 @@ class AgentBase(ABC):
         self.tool_factory   = ToolEventFactory(prefix="infra")
         self.work_path      = "/Users/zxcvbzzy1/Desktop/项目/agent_flow/temp"  # 默认工作目录
         self.context_engine = context
-
         self._tool_done     = asyncio.Event()
         self._pending_tools = 0
         AgentBase._instance_list[self.id] = self
