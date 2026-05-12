@@ -55,10 +55,20 @@ class PlanStepPromptProvider(ContextProvider):
             step_id = step.get("step_id", "")
             title = step.get("title", "")
             detail = step.get("detail", "")
+            depends_on = step.get("depends_on", [])
         else:
             step_id = getattr(step, "step_id", "")
             title = getattr(step, "title", "")
             detail = getattr(step, "detail", "")
+            depends_on = getattr(step, "depends_on", [])
+
+        dependency_observations = []
+        for plan_step in state.get("plan", {}).get("steps", []):
+            if plan_step.get("step_id") in depends_on and plan_step.get("observation"):
+                dependency_observations.append(
+                    f"- [{plan_step.get('step_id')}] {plan_step.get('title')}: "
+                    f"{plan_step.get('observation')}"
+                )
 
         return [
             "\n".join([
@@ -68,8 +78,35 @@ class PlanStepPromptProvider(ContextProvider):
                 f"- step_id: {step_id}",
                 f"- title: {title}",
                 f"- detail: {detail}",
+                f"- depends_on: {depends_on}",
+                "",
+                "依赖步骤观察结果：",
+                "\n".join(dependency_observations) if dependency_observations else "无",
                 "",
                 "请只完成当前步骤，并在完成时输出 is_finished=true。",
             ])
         ]
 
+
+class PlanObservationProvider(ContextProvider):
+    """输出已完成或失败计划步骤的 observation，供 replan 和 summary 使用。"""
+    name = "plan_observations"
+
+    def get(self, state: dict) -> list[str]:
+        steps = state.get("plan", {}).get("steps", [])
+        observed_steps = [
+            step for step in steps
+            if step.get("status") in {"done", "failed", "skipped"}
+        ]
+        if not observed_steps:
+            return []
+
+        parts = ["## 计划执行观察"]
+        for step in observed_steps:
+            observation = step.get("observation") or step.get("note") or ""
+            parts.append(
+                f"- [{step.get('step_id')}] {step.get('title')} "
+                f"status={step.get('status')} executor_id={step.get('executor_id')}\n"
+                f"  observation: {observation}"
+            )
+        return ["\n".join(parts)]
