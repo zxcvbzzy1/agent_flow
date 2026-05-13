@@ -83,7 +83,7 @@ class PlanStepPromptProvider(ContextProvider):
                 "依赖步骤观察结果：",
                 "\n".join(dependency_observations) if dependency_observations else "无",
                 "",
-                "请只完成当前步骤，并在完成时输出 is_finished=true。",
+                "请严格只完成当前步骤，禁止完成其他步骤，并在完成时输出 is_finished=true。",
             ])
         ]
 
