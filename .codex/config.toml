@@ -1,6 +1,0 @@
-[mcp_servers.excalidraw]
-args = [
-    "/Users/zxcvbzzy1/Desktop/MCP_skill/draw/excalidraw-mcp/dist/index.js",
-    "--stdio",
-]
-command = "node"
