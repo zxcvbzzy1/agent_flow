@@ -1,12 +1,49 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
+from typing import Literal
 
 from domain.agent.plan.planAgent import PlanAgent
 from domain.agent_base import AgentBase
 from domain.context.context import ContextEngine
 from domain.event import Event, EventBusPort
 from domain.state import Plan, PlanStep
+
+
+
+@dataclass
+class OrchestratorState:
+    prompt: str = ""
+    executors: dict[str, dict] = field(default_factory=dict)
+    plan: dict = field(default_factory=dict)
+    current_step: dict | None = None
+    final: str = ""
+    is_finished: bool = False
+    finish_reason: str = ""
+
+    def to_context_dict(self) -> dict:
+        state = {
+            "prompt": self.prompt,
+            "executors": self.executors,
+            "plan": self.plan,
+            "final": self.final,
+            "is_finished": self.is_finished,
+            "finish_reason": self.finish_reason,
+        }
+        if self.current_step is not None:
+            state["current_step"] = self.current_step
+        return state
+
+event_dispatch = Literal[
+    "workflow.started",
+    "plan.generated",
+    "wave.completed",
+    "plan.replanned",
+    "plan.step.observed",
+    "workflow.finished"
+]
+
 
 
 class PlanOrchestrator:
@@ -16,7 +53,7 @@ class PlanOrchestrator:
         self,
         planner: PlanAgent,
         executors: dict[str, AgentBase],
-        state: dict,
+        state: OrchestratorState,
         step_context_engine: ContextEngine,
         event_bus: EventBusPort | None = None,
         max_replan_rounds: int = 5,
@@ -30,26 +67,38 @@ class PlanOrchestrator:
         self._replan_rounds = 0
 
     async def start(self, prompt: str) -> None:
-        self.state["prompt"] = prompt
-        self.state["executors"] = self._executor_status()
+        self._dispatch({
+            "event_dispatch": "workflow.started",
+            "playload": {"prompt": prompt},
+        })
 
         plan = await self.planner.generate_plan(
-            self.state,
+            self.state.to_context_dict(),
             list(self.executors.keys()),
         )
-        self.state["plan"] = plan.to_dict()
+        self._dispatch({
+            "event_dispatch": "plan.generated",
+            "playload": {"plan": plan},
+        })
 
         await self.execute(plan)
-        self.state["executors"] = self._executor_status()
 
-        self.state["final"] = await self.planner.summarize_result(self.state)
-        self.state["is_finished"] = True
-        self.state["finish_reason"] = "计划编排执行完成"
+        final = await self.planner.summarize_result(self.state.to_context_dict())
+        self._dispatch({
+            "event_dispatch": "workflow.finished",
+            "playload": {
+                "final": final,
+                "finish_reason": "计划编排执行完成",
+            },
+        })
 
     async def execute(self, plan: Plan) -> None:
         while True:
             self._fail_steps_with_unknown_executor(plan)
-            self._sync_plan_state(plan)
+            self._dispatch({
+                "event_dispatch": "wave.completed",
+                "playload": {"plan": plan},
+            })
 
             pending_steps = [step for step in plan.steps if step.status == "pending"]
             if not pending_steps:
@@ -62,7 +111,10 @@ class PlanOrchestrator:
 
             if not ready_steps:
                 self._fail_blocked_steps(pending_steps, plan)
-                self._sync_plan_state(plan)
+                self._dispatch({
+                    "event_dispatch": "wave.completed",
+                    "playload": {"plan": plan},
+                })
                 return
 
             await asyncio.gather(*[
@@ -70,7 +122,10 @@ class PlanOrchestrator:
                 for step in ready_steps
             ])
 
-            self._sync_plan_state(plan)
+            self._dispatch({
+                "event_dispatch": "wave.completed",
+                "playload": {"plan": plan},
+            })
             await self._publish_event(
                 "plan.wave.completed",
                 {
@@ -92,9 +147,38 @@ class PlanOrchestrator:
                 step.note = f"未知 executor_id: {step.executor_id}"
                 step.observation = step.note
 
-    def _sync_plan_state(self, plan: Plan) -> None:
-        self.state["plan"] = plan.to_dict()
-        self.state["executors"] = self._executor_status()
+    def _dispatch(self, action: dict) -> None:
+        action_type = action.get("event_dispatch")
+        playload = action.get("playload", {})
+        
+
+        if action_type == "workflow.started":
+            self.state.prompt = playload.get("prompt", "")
+            self.state.executors = self._executor_status()
+            self.state.current_step = None
+            return
+
+        if action_type in {"plan.generated", "wave.completed", "plan.replanned"}:
+            plan = playload["plan"]
+            self.state.plan = plan.to_dict()
+            self.state.executors = self._executor_status()
+            self.state.current_step = None
+            return
+
+        if action_type == "workflow.finished":
+            self.state.executors = self._executor_status()
+            self.state.final = playload.get("final", "")
+            self.state.is_finished = True
+            self.state.finish_reason = playload.get("finish_reason", "")
+            self.state.current_step = None
+
+    def _build_step_context_state(self, plan: Plan, step: PlanStep) -> dict:
+        return {
+            **self.state.to_context_dict(),
+            "plan": plan.to_dict(),
+            "executors": self._executor_status(),
+            "current_step": step.to_dict(),
+        }
 
     def _executor_status(self) -> dict[str, dict]:
         status = {}
@@ -118,10 +202,10 @@ class PlanOrchestrator:
     async def _run_plan_step(self, step: PlanStep, plan: Plan) -> None:
         executor = self.executors[step.executor_id]
         step.status = "in_progress"
-        self.state["current_step"] = step.to_dict()
-        self._sync_plan_state(plan)
 
-        step_prompt = self.step_context_engine.build(self.state)
+        step_prompt = self.step_context_engine.build(
+            self._build_step_context_state(plan, step)
+        )
         try:
             executor.states["is_finished"] = False
             executor.states["finish_reason"] = ""
@@ -137,8 +221,6 @@ class PlanOrchestrator:
             step.note = f"执行异常: {exc}"
         finally:
             step.observation = self._build_step_observation(step, executor)
-            self.state["current_step"] = {}
-            self._sync_plan_state(plan)
             await self._publish_event(
                 "plan.step.observed",
                 {
@@ -170,7 +252,10 @@ class PlanOrchestrator:
             return False
 
         self._replan_rounds += 1
-        decision = await self.planner.replan_after_observation(plan, self.state)
+        decision = await self.planner.replan_after_observation(
+            plan,
+            self.state.to_context_dict(),
+        )
         action = decision.get("action", "continue")
 
         if action == "finish":
@@ -179,12 +264,18 @@ class PlanOrchestrator:
                     step.status = "skipped"
                     step.note = decision.get("reason", "replan 决定提前结束")
                     step.observation = step.note
-            self._sync_plan_state(plan)
+            self._dispatch({
+                "event_dispatch": "plan.replanned",
+                "playload": {"plan": plan},
+            })
             return True
 
         if action == "replan":
             self._apply_replan_steps(plan, decision.get("steps", []))
-            self._sync_plan_state(plan)
+            self._dispatch({
+                "event_dispatch": "plan.replanned",
+                "playload": {"plan": plan},
+            })
 
         return False
 
