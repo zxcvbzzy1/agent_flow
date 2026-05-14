@@ -326,4 +326,9 @@ class PlanOrchestrator:
                 )
                 continue
 
+            if existing is None:
+                plan.add_steps([raw_step])
+                steps_by_id[step_id] = plan.steps[-1]
+                continue
+
             continue
