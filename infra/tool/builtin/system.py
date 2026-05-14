@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import ClassVar, Optional
 from infra.event_bind import On_bind
 from infra.config import factory, agent_dict,bus
-from infra.tool.common_func import ask_human_input
+from infra.tool.common_func import human_approval_service
 
 
 BASH = Tool(
@@ -308,7 +308,7 @@ async def confirm(**kwargs) -> Event:
     auto_confirm = os.getenv("AGENT_FLOW_AUTO_CONFIRM", "").lower()
     if auto_confirm in {"1", "true", "yes", "y"}:
         return Event(
-            f"human.bash.confirmed",
+            "human.bash.confirmed",
             payload={
                 "approved": True,
                 "reason": "环境变量 AGENT_FLOW_AUTO_CONFIRM 已自动确认",
@@ -316,24 +316,24 @@ async def confirm(**kwargs) -> Event:
         )
     if auto_confirm in {"0", "false", "no", "n"}:
         return Event(
-            f"human.bash.confirmed",
+            "human.bash.confirmed",
             payload={
                 "approved": False,
                 "reason": "环境变量 AGENT_FLOW_AUTO_CONFIRM 已拒绝执行",
             },
         )
 
-    print(f"\n[HUMAN CONFIRM] bash 工具请求执行：")
+    print("\n[HUMAN CONFIRM] bash 工具请求执行：")
     print(f"agent_id: {agent_id}")
     print(f"command: {command}")
     answer = (
-        await ask_human_input("是否允许执行该命令？输入 yes/y 允许，其它输入拒绝: ")
+        await human_approval_service.input("是否允许执行该命令？输入 yes/y 允许，其它输入拒绝: ")
     ).strip().lower()
     approved = answer in {"yes", "y"}
     return Event(
-        f"human.bash.confirmed",
+        "human.bash.confirmed",
         payload={
             "approved": approved,
-            "reason": f"用户确认执行 bash 命令" if approved else f"用户拒绝执行 bash 命令，{answer}",
+            "reason": "用户确认执行 bash 命令" if approved else f"用户拒绝执行 bash 命令，{answer}",
         },
     )

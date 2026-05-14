@@ -8,7 +8,7 @@ from domain.agent.plan.planAgent import PlanAgent
 from domain.agent_base import AgentBase
 from domain.context.context import ContextEngine
 from domain.event import Event, EventBusPort
-from domain.state import Plan, PlanStep
+from domain.state import Plan, PlanStep, _dict_to_plan
 
 
 
@@ -34,6 +34,10 @@ class OrchestratorState:
         if self.current_step is not None:
             state["current_step"] = self.current_step
         return state
+
+    def get(self, key: str, default=None):
+        """兼容 provider / notebook 中少量 dict 风格读取。"""
+        return self.to_context_dict().get(key, default)
 
 event_dispatch = Literal[
     "workflow.started",
@@ -144,8 +148,8 @@ class PlanOrchestrator:
         for step in plan.steps:
             if step.status == "pending" and step.executor_id not in self.executors:
                 step.status = "failed"
-                step.note = f"未知 executor_id: {step.executor_id}"
-                step.observation = step.note
+                step.status_reason = f"未知 executor_id: {step.executor_id}"
+                step.result_observation = step.status_reason
 
     def _dispatch(self, action: dict) -> None:
         action_type = action.get("event_dispatch")
@@ -172,14 +176,6 @@ class PlanOrchestrator:
             self.state.finish_reason = playload.get("finish_reason", "")
             self.state.current_step = None
 
-    def _build_step_context_state(self, plan: Plan, step: PlanStep) -> dict:
-        return {
-            **self.state.to_context_dict(),
-            "plan": plan.to_dict(),
-            "executors": self._executor_status(),
-            "current_step": step.to_dict(),
-        }
-
     def _executor_status(self) -> dict[str, dict]:
         status = {}
         for executor_id, executor in self.executors.items():
@@ -204,23 +200,29 @@ class PlanOrchestrator:
         step.status = "in_progress"
 
         step_prompt = self.step_context_engine.build(
-            self._build_step_context_state(plan, step)
+            {
+            **self.state.to_context_dict(),
+            "plan": plan.to_dict(),
+            "executors": self._executor_status(),
+            "current_step": step.to_dict(),
+        }
         )
         try:
             executor.states["is_finished"] = False
             executor.states["finish_reason"] = ""
+            executor.states["final"] = ""
             await executor.start(step_prompt)
             if executor.states.get("is_finished", True):
                 step.status = "done"
-                step.note = executor.states.get("finish_reason", "执行完成")
+                step.status_reason = executor.states.get("finish_reason", "执行完成")
             else:
                 step.status = "failed"
-                step.note = executor.states.get("finish_reason", "执行失败")
+                step.status_reason = executor.states.get("finish_reason", "执行失败")
         except Exception as exc:
             step.status = "failed"
-            step.note = f"执行异常: {exc}"
+            step.status_reason = f"执行异常: {exc}"
         finally:
-            step.observation = self._build_step_observation(step, executor)
+            step.result_observation = self._build_step_observation(step, executor)
             await self._publish_event(
                 "plan.step.observed",
                 {
@@ -262,8 +264,8 @@ class PlanOrchestrator:
             for step in plan.steps:
                 if step.status == "pending":
                     step.status = "skipped"
-                    step.note = decision.get("reason", "replan 决定提前结束")
-                    step.observation = step.note
+                    step.status_reason = decision.get("reason", "replan 决定提前结束")
+                    step.result_observation = step.status_reason
             self._dispatch({
                 "event_dispatch": "plan.replanned",
                 "playload": {"plan": plan},
@@ -298,37 +300,18 @@ class PlanOrchestrator:
             blocked = [dep for dep in step.depends_on if dep not in done_step_ids]
             step.status = "failed"
             if missing:
-                step.note = f"依赖不存在: {missing}"
+                step.status_reason = f"依赖不存在: {missing}"
             elif failed:
-                step.note = f"依赖已失败: {failed}"
+                step.status_reason = f"依赖已失败: {failed}"
             else:
-                step.note = f"依赖阻塞或循环依赖: {blocked}"
-            step.observation = step.note
+                step.status_reason = f"依赖阻塞或循环依赖: {blocked}"
+            step.result_observation = step.status_reason
 
 
     def _apply_replan_steps(self, plan: Plan, raw_steps: list[dict]) -> None:
-        steps_by_id = {step.step_id: step for step in plan.steps}
-        for raw_step in raw_steps:
-            step_id = raw_step.get("step_id")
-            if not step_id:
-                continue
-
-            existing = steps_by_id.get(step_id)
-            if existing and existing.status == "pending":
-                plan.update_step(
-                    step_id,
-                    title=raw_step.get("title", existing.title),
-                    detail=raw_step.get("detail", existing.detail),
-                    executor_id=raw_step.get("executor_id", existing.executor_id),
-                    depends_on=raw_step.get("depends_on", existing.depends_on),
-                    observation=raw_step.get("observation", existing.observation),
-                    note=raw_step.get("note", existing.note),
-                )
-                continue
-
-            if existing is None:
-                plan.add_steps([raw_step])
-                steps_by_id[step_id] = plan.steps[-1]
-                continue
-
-            continue
+        history_steps = [
+            step for step in plan.steps
+            if step.status != "pending"
+        ]
+        replacement = _dict_to_plan({"steps": raw_steps})
+        plan.steps = history_steps + replacement.steps

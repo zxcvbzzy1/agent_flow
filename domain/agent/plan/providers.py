@@ -42,6 +42,51 @@ class ExecutorStatusProvider(ContextProvider):
         return ["\n".join(parts)]
 
 
+class PlanObservationProvider(ContextProvider):
+    """输出当前计划和已完成/失败步骤的 result_observation，供 replan 和 summary 使用。"""
+    name = "plan_observations"
+
+    def get(self, state: dict) -> list[str]:
+        steps = state.get("plan", {}).get("steps", [])
+        observed_steps = [
+            step for step in steps
+            if step.get("status") in {"done", "failed", "skipped"}
+        ]
+        if not steps:
+            return []
+
+        parts = ["## 当前计划"]
+        for step in steps:
+            parts.append(
+                f"- [{step.get('step_id')}] {step.get('title')} "
+                f"status={step.get('status')} executor_id={step.get('executor_id')} "
+                f"depends_on={step.get('depends_on', [])}\n"
+                f"  instruction: {step.get('instruction', step.get('detail', ''))}\n"
+                f"  result_observation: {step.get('result_observation', step.get('observation', ''))}"
+            )
+
+        parts.extend(["", "## 计划执行观察"])
+        if not observed_steps:
+            parts.append("暂无已完成、失败或跳过的步骤观察。")
+            return ["\n".join(parts)]
+
+        for step in observed_steps:
+            result_observation = (
+                step.get("result_observation")
+                or step.get("observation")
+                or step.get("status_reason")
+                or step.get("note")
+                or ""
+            )
+            parts.append(
+                f"- [{step.get('step_id')}] {step.get('title')} "
+                f"status={step.get('status')} executor_id={step.get('executor_id')}\n"
+                f"  result_observation: {result_observation}"
+            )
+        return ["\n".join(parts)]
+
+
+
 class PlanStepPromptProvider(ContextProvider):
     """构造发送给 ReACT executor 的单步任务上下文。"""
     name = "plan_step_prompt"
@@ -54,59 +99,40 @@ class PlanStepPromptProvider(ContextProvider):
         if isinstance(step, dict):
             step_id = step.get("step_id", "")
             title = step.get("title", "")
-            detail = step.get("detail", "")
+            instruction = step.get("instruction", step.get("detail", ""))
             depends_on = step.get("depends_on", [])
         else:
             step_id = getattr(step, "step_id", "")
             title = getattr(step, "title", "")
-            detail = getattr(step, "detail", "")
+            instruction = getattr(step, "instruction", getattr(step, "detail", ""))
             depends_on = getattr(step, "depends_on", [])
 
         dependency_observations = []
         for plan_step in state.get("plan", {}).get("steps", []):
-            if plan_step.get("step_id") in depends_on and plan_step.get("observation"):
+            result_observation = plan_step.get(
+                "result_observation",
+                plan_step.get("observation", ""),
+            )
+            if plan_step.get("step_id") in depends_on and result_observation:
                 dependency_observations.append(
                     f"- [{plan_step.get('step_id')}] {plan_step.get('title')}: "
-                    f"{plan_step.get('observation')}"
+                    f"{result_observation}"
                 )
 
         return [
             "\n".join([
-                f"原始用户需求：\n{state.get('prompt', '')}",
-                "",
+                # f"原始用户需求：\n{state.get('prompt', '')}",
+                # "",
+                "你是一个严格执行当前计划步骤的agent，请根据以下信息完成当前步骤：",
                 "当前计划步骤：",
                 f"- step_id: {step_id}",
                 f"- title: {title}",
-                f"- detail: {detail}",
+                f"- instruction: {instruction}",
                 f"- depends_on: {depends_on}",
                 "",
                 "依赖步骤观察结果：",
                 "\n".join(dependency_observations) if dependency_observations else "无",
                 "",
-                "请严格只完成当前步骤，禁止完成其他步骤，并在完成时输出 is_finished=true。",
+                "请严格只完成当前步骤，并在完成时输出 is_finished=true。",
             ])
         ]
-
-
-class PlanObservationProvider(ContextProvider):
-    """输出已完成或失败计划步骤的 observation，供 replan 和 summary 使用。"""
-    name = "plan_observations"
-
-    def get(self, state: dict) -> list[str]:
-        steps = state.get("plan", {}).get("steps", [])
-        observed_steps = [
-            step for step in steps
-            if step.get("status") in {"done", "failed", "skipped"}
-        ]
-        if not observed_steps:
-            return []
-
-        parts = ["## 计划执行观察"]
-        for step in observed_steps:
-            observation = step.get("observation") or step.get("note") or ""
-            parts.append(
-                f"- [{step.get('step_id')}] {step.get('title')} "
-                f"status={step.get('status')} executor_id={step.get('executor_id')}\n"
-                f"  observation: {observation}"
-            )
-        return ["\n".join(parts)]

@@ -85,7 +85,7 @@ class PlanAgent(AgentBase):
     {{
       "step_id": "1",
       "title": "步骤标题",
-      "detail": "步骤说明",
+      "instruction": "步骤执行说明",
       "executor_id": "可用 executor_id",
       "depends_on": []
     }}
@@ -119,9 +119,9 @@ replan 时输出：
     {
       "step_id": "E",
       "title": "补充步骤",
-      "detail": "步骤说明",
+      "instruction": "步骤执行说明",
       "executor_id": "可用 executor_id",
-      "depends_on": []
+      "depends_on": ["依赖的step_id"] 
     }
   ]
 }

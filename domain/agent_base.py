@@ -25,6 +25,7 @@ class AgentDecision:
     think:         str = ""
     is_finished:   bool = False
     finish_reason: str = ""
+    final:         str = ""
 
 
 class AgentBase(ABC):
@@ -87,6 +88,9 @@ class AgentBase(ABC):
 
     async def start(self, prompt: str) -> None:
         self.states["prompt"] = prompt
+        self.states["final"] = ""
+        self.states["is_finished"] = False
+        self.states["finish_reason"] = ""
         await self.run()
 
     async def run(self) -> None:
@@ -106,6 +110,7 @@ class AgentBase(ABC):
         if decision.is_finished:
             self.states["is_finished"]   = True
             self.states["finish_reason"] = decision.finish_reason
+            self.states["final"]         = decision.final or decision.finish_reason
             return True
         
         
@@ -121,6 +126,7 @@ class AgentBase(ABC):
             {"role": "user",   "content": context},
         ]
         # print(context)
+        print(f"[LLM] {self.id} 正在进行推理")
         response = await self._llm.chat(messages)
         decision = self._parse_decision(response)
 
@@ -203,7 +209,8 @@ class AgentBase(ABC):
   "think": "...",
   "tool_calls": [],
   "is_finished": true,
-  "finish_reason": "完成原因"
+  "finish_reason": "完成原因",
+  "final": "最终结果"
 }}
 """
 
@@ -238,4 +245,5 @@ class AgentBase(ABC):
             think=data.get("think", ""),
             is_finished=data.get("is_finished", False),
             finish_reason=data.get("finish_reason", ""),
+            final=data.get("final", ""),
         )

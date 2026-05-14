@@ -14,16 +14,18 @@ human_auditor = HumanCollaborationAuditor(factory, bus)
 # logging middleware
 @on_tool.use()
 async def logging_middleware(event: Event, call_next):
-    print(f"[LOG] 事件触发: {event.name}")
+    event_payload = event.unpack()
+    agent_id = event_payload.get("agent_id", "Unknown")
+    print(f"[LOG] {agent_id} 事件触发: {event.name}")
     # print(f"{event.name}负载为:\n {event.payload}")
 
     try:
         result = await call_next()
-        print(f"[LOG] 事件完成: {event.name}")
+        print(f"[LOG]  {agent_id}  事件完成: {event.name}")
         return result
 
     except Exception as e:
-        print(f"[ERROR] 事件异常: {event.name} -> {e}")
+        print(f"[ERROR]  {agent_id}  事件异常: {event.name} -> {e}")
         raise   # ⚠️ 一定要 rethrow
 
 
