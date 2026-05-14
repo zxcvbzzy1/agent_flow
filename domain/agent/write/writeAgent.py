@@ -60,7 +60,8 @@ class WriteAgent(AgentBase):
   "think": "...",
   "tool_calls": [],
   "is_finished": true,
-  "finish_reason": "完成原因"
+  "finish_reason": "完成原因",
+  "final": "最终结果"
 }}
 """        
 
@@ -69,4 +70,3 @@ class WriteAgent(AgentBase):
 
 
     
-

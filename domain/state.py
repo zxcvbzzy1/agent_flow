@@ -9,27 +9,37 @@ PlanStatus = Literal["pending", "in_progress", "done", "failed", "skipped"]
 
 @dataclass
 class PlanStep:
-    step_id:    str
-    title:      str
-    detail:     str         = ""
-    executor_id: str        = ""
-    depends_on: list[str]   = field(default_factory=list)
-    observation: str        = ""
-    status:     PlanStatus  = "pending"
-    note:       str         = ""
-    created_at: float       = field(default_factory=time.time)
-    updated_at: float       = field(default_factory=time.time)
+    # 步骤唯一标识，用于依赖引用、replan 定位和状态追踪。
+    step_id: str
+    # 步骤短标题，用于人类阅读和 prompt 摘要。
+    title: str
+    # 执行前的任务说明，即这个步骤要让 executor 做什么。
+    instruction: str = ""
+    # 负责执行该步骤的 executor id。
+    executor_id: str = ""
+    # 依赖的 step_id 列表；依赖步骤 done 后本步骤才可调度。
+    depends_on: list[str] = field(default_factory=list)
+    # 执行后的完整观察结果，供后续步骤、replan 和 summary 使用。
+    result_observation: str = ""
+    # 调度状态：pending/in_progress/done/failed/skipped。
+    status: PlanStatus = "pending"
+    # 当前状态的简短原因，例如失败原因、跳过原因、执行完成原因。
+    status_reason: str = ""
+    # 步骤创建时间。
+    created_at: float = field(default_factory=time.time)
+    # 步骤最后更新时间。
+    updated_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:
         return {
             "step_id":    self.step_id,
             "title":      self.title,
-            "detail":     self.detail,
+            "instruction": self.instruction,
             "executor_id": self.executor_id,
             "depends_on":  self.depends_on,
-            "observation": self.observation,
+            "result_observation": self.result_observation,
             "status":     self.status,
-            "note":       self.note,
+            "status_reason": self.status_reason,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -49,27 +59,35 @@ class Plan:
             self.steps.append(PlanStep(
                 step_id=s.get("step_id", str(uuid.uuid4())[:8]),
                 title=s.get("title", ""),
-                detail=s.get("detail", ""),
+                instruction=s.get("instruction", s.get("detail", "")),
                 executor_id=s.get("executor_id", ""),
                 depends_on=s.get("depends_on", []),
-                observation=s.get("observation", ""),
+                result_observation=s.get("result_observation", s.get("observation", "")),
             ))
 
     def update_step(self, step_id: str, title: str | None = None,
-                    detail: str | None = None, status: PlanStatus | None = None,
-                    note: str | None = None,
+                    instruction: str | None = None, status: PlanStatus | None = None,
+                    status_reason: str | None = None,
                     executor_id: str | None = None,
                     depends_on: list[str] | None = None,
-                    observation: str | None = None) -> PlanStep | None:
+                    result_observation: str | None = None,
+                    **legacy_fields) -> PlanStep | None:
+        if instruction is None:
+            instruction = legacy_fields.get("detail")
+        if status_reason is None:
+            status_reason = legacy_fields.get("note")
+        if result_observation is None:
+            result_observation = legacy_fields.get("observation")
+
         for step in self.steps:
             if step.step_id == step_id:
                 if title  is not None: step.title  = title
-                if detail is not None: step.detail = detail
+                if instruction is not None: step.instruction = instruction
                 if status is not None: step.status = status
-                if note   is not None: step.note   = note
+                if status_reason is not None: step.status_reason = status_reason
                 if executor_id is not None: step.executor_id = executor_id
                 if depends_on is not None: step.depends_on = depends_on
-                if observation is not None: step.observation = observation
+                if result_observation is not None: step.result_observation = result_observation
                 step.updated_at = time.time()
                 return step
         return None
@@ -128,12 +146,12 @@ def _dict_to_plan(plan_dict: dict) -> Plan:
         step = PlanStep(
             step_id=s["step_id"],
             title=s["title"],
-            detail=s.get("detail", ""),
+            instruction=s.get("instruction", s.get("detail", "")),
             executor_id=s.get("executor_id", ""),
             depends_on=s.get("depends_on", []),
-            observation=s.get("observation", ""),
+            result_observation=s.get("result_observation", s.get("observation", "")),
             status=s.get("status", "pending"),
-            note=s.get("note", ""),
+            status_reason=s.get("status_reason", s.get("note", "")),
             created_at=s.get("created_at", 0),
             updated_at=s.get("updated_at", 0),
         )

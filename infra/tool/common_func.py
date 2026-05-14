@@ -1,5 +1,4 @@
 import asyncio
-import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,6 +17,24 @@ class HumanAuditResult:
     reason: str
 
 
+class HumanApprovalService:
+    """串行化人类确认请求，避免并发 input 抢占同一个 stdin。"""
+
+    def __init__(
+        self,
+        input_func=ask_human_input,
+    ) -> None:
+        self.input_func = input_func
+        self._lock = asyncio.Lock()
+
+    async def input(self, prompt: str) -> str:
+        async with self._lock:
+            return await self.input_func(prompt)
+
+
+human_approval_service = HumanApprovalService()
+
+
 class HumanCollaborationAuditor:
     """工具执行前的人机协作审核器。"""
 
@@ -31,7 +48,7 @@ class HumanCollaborationAuditor:
         if audit_result.approved:
             return await call_next()
 
-        return self.reject(event, audit_result.reason)
+        return await self.reject(event, audit_result.reason)
 
     async def audit(self, event: Event) -> HumanAuditResult:
         arguments = event.unpack()
@@ -64,7 +81,7 @@ class HumanCollaborationAuditor:
 
         return self._parse_human_results(human_results)
 
-    def reject(self, event: Event, reason: str):
+    async def reject(self, event: Event, reason: str):
         arguments = event.unpack()
         try:
             spec = self.factory.get_spec(event.name)
@@ -80,7 +97,7 @@ class HumanCollaborationAuditor:
             success=False,
             respond=reason,
         )
-        self.factory.tool(tool_name).emit_failed(respond)
+        return await self.factory.tool(tool_name).emit_failed(respond)
 
     def _parse_human_results(self, human_results: Any) -> HumanAuditResult:
         if not human_results:
