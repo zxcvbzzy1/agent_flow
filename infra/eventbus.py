@@ -1,8 +1,8 @@
 import asyncio
+from dataclasses import dataclass
 import fnmatch
-from typing import Callable, Any
+from typing import Callable, Any, Optional
 from domain.event import Event, EventBusPort
-
 
 
 class EventBus(EventBusPort):

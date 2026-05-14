@@ -61,12 +61,9 @@ plan agent构建，基于agent基类构建计划型agent
    - 绑定工具事件到具体工具实现。
    - 处理工具成功 / 失败事件，并回调对应 executor agent 的 `on_tool_call()`。
 
-8. `infra/config.py`
-   - 创建运行时依赖：`EventBus`、`ToolEventFactory`、LLM client、memory、ContextEngine。
-   - 执行：
-     ```python
-     factory = ToolEventFactory(prefix="infra")._build()._resigister_bus(bus)
-     ```
+8. `infra/tool/common_func.py`
+   - 工具执行通用函数
+   - 包含用户交互相关函数
 
 
 ### 工具声明
@@ -171,6 +168,56 @@ async def on_tool_success(**kwargs):
 ```
 
 单事件绑定用于具体工具实现；模式绑定用于统一成功 / 失败回调、日志、中间件等横切逻辑。
+
+
+### 工具执行前的人类确认
+
+
+
+
+如果某些工具在执行前需要人类确认，例如 `bash`、文件写入、外部发送、删除、发布等
+
+在`Tool`中添加` metadata={"require_human_confirm": True}`如
+
+```python
+from domain.tool import Tool
+
+BASH = Tool(
+    name="bash",
+    description="执行 bash 命令，执行前会审核高危命令和工作路径",
+    field="system",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "command": {"type": "string", "description": "要执行的 bash 命令"}
+        },
+        "required": ["command"],
+    },
+    metadata={"require_human_confirm": True}
+)
+```
+
+可自行编辑人工交互行为函数，并绑定到工具上，如
+
+绑定事件，事件名为`human.{tool_name}`,如
+```python
+@on_tool.on(Event("human.bash"))
+async def confirm(**kwargs) -> Event:
+```
+
+其中`kwargs`包含
+
+```python
+{
+    "tool_name": tool_name,
+    "called_event_name": event.name,
+    "arguments": arguments, # arguments包含工具input_schema 与 agent_id
+}
+```
+
+通用用户确认函数为
+`ask_human_input`
+
 
 
 ## 上下文管理流程
@@ -467,4 +514,5 @@ infra/
       declare.py                   # 通用工具声明
       system.py                    # bash 工具声明和实现
     tools_attach_methods.py        # 工具事件绑定和工具实现
+    common_func.py                 # 工具事件辅助函数
 ```

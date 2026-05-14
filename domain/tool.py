@@ -41,6 +41,11 @@ class Tool:
         """获取所有已实例化的工具"""
         return cls._registry
     
+    @classmethod
+    def get_tools_by_metadata(cls, key: str, value: Any) -> List['Tool']:
+        """根据元数据筛选工具"""
+        return [tool for tool in cls._registry if tool.metadata.get(key) == value]
+
     def to_dict(self) -> dict:
         return {
             "name": self.name,

@@ -29,7 +29,11 @@ class On_bind():
             is_coro = inspect.iscoroutinefunction(fn)
             @wraps(fn)
             async def wrapper(event2, *args, **kwargs):
-                new_kwargs = {**event2.unpack(), **kwargs}
+                new_kwargs = {
+                    **event2.unpack(),
+                    "_event": event2,
+                    "_registered_event": event, 
+                    **kwargs}
 
                 result = await fn(*args, **new_kwargs) if is_coro else fn(*args, **new_kwargs)
                 if isinstance(result, Event):
@@ -46,7 +50,7 @@ class On_bind():
             is_coro = inspect.iscoroutinefunction(fn)
             @wraps(fn)
             async def wrapper(event, *args, **kwargs):
-                new_kwargs = {**event.unpack(), **kwargs}
+                new_kwargs = {**event.unpack(),  "_event": event,**kwargs}
                 result = await fn(*args, **new_kwargs) if is_coro else fn(*args, **new_kwargs)
                 if isinstance(result, Event):
                     await self._bus.publish(result)

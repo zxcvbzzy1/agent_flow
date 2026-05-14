@@ -6,7 +6,7 @@ import json
 import os
 import re
 import sys
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Optional
 
 from domain.state import Agent_state
 from domain.tool import Tool, Tool_respond
@@ -65,6 +65,19 @@ class EventBusPort(ABC):
     def subscribe(self, event_name: str, handler) -> None:
         ...
 
+# ---------------------------------------------------------------------------
+# 事件总线返回
+# ---------------------------------------------------------------------------
+
+@dataclass
+class EventBusReturn:
+    results: Any
+    success: bool
+    agent_id: Optional[str] = None
+    src_object: Optional[Event] = None
+    error: Optional[Exception] = None
+
+
 
 # ---------------------------------------------------------------------------
 # 单工具事件定义格式
@@ -78,6 +91,7 @@ class ToolEventSpec:
     tool_name:  str
     tool_field: str | None
     tool_input_schema: dict[str, Any]
+    tool_metadata: dict[str, Any] = field(default_factory=dict)
     _events: dict[str, str] = field(default_factory=dict)  # suffix -> event_name
     _bus: "EventBusPort | None" = field(
         default=None,
@@ -133,13 +147,15 @@ class ToolEventSpec:
 
     # ── 内部 ─────────────────────────────────────────────────────────
  
-    def _emit(self, suffix: str, payload: dict) -> Event:
+    def _emit(self, suffix: str, payload: dict | None) -> Event:
         event_name = self._events.get(suffix)
         if event_name is None:
             raise AttributeError(
                 f"工具 '{self.tool_name}' 没有 '{suffix}' 事件。"
                 f"可用: {list(self._events.keys())}"
             )
+        if payload is None:
+            payload = {}
         return Event(name=event_name, payload=payload)
  
     def all_event_names(self) -> list[str]:
@@ -213,6 +229,16 @@ class ToolEventFactory:
         for v in result.values():
             v.sort()
         return result
+    
+    def get_spec(self, event_name: str) -> ToolEventSpec:
+        """通过事件名反查对应工具的事件描述符。"""
+        for spec in self._specs.values():
+            if event_name in spec.all_event_names():
+                return spec
+        raise KeyError(
+            f"事件 '{event_name}' 未匹配到工具描述符。"
+            f"已知事件: {self.all_events()}"
+        )
 
     # ── 构建注册工具的ToolEventSpec事件类型─────────────────────────────────────────────────────────
     def _build(self) -> None:
@@ -226,6 +252,7 @@ class ToolEventFactory:
                 tool_name=tool.name,
                 tool_field=tool.field,
                 tool_input_schema=tool.input_schema,
+                tool_metadata=dict(tool.metadata),
             )
             for suffix in self._SUFFIXES:
                 spec._events[suffix] = f"{base}.{suffix}"
@@ -249,12 +276,14 @@ class ToolEventFactory:
                 tool_name=tool.name,
                 tool_field=tool.field,
                 tool_input_schema=tool.input_schema,
+                tool_metadata=dict(tool.metadata),
             )
             for suffix in self._SUFFIXES:
                 spec._events[suffix] = f"{base}.{suffix}"
             spec.set_bus(bus)
             self._specs[tool.name] = spec
         return self
+    
 
     
 
@@ -269,4 +298,3 @@ def _to_dot_name(tool_name: str) -> str:
  
 def _to_pascal(s: str) -> str:
     return "".join(w.capitalize() for w in re.split(r"[_\s]+", s))
-
