@@ -497,6 +497,12 @@ print(orchestrator.state.final)
 ## 目录速览
 
 ```text
+application/
+  agent/
+    bash_agent.py                  # bash ReACT agent 应用示例
+    story_write_agent.py           # 故事写作 ReACT agent 应用示例
+    orchestrator_executors.py      # 编排者-执行者应用示例
+
 domain/
   agent_base.py                    # ReACT executor 基类
   tool.py                          # Tool / Tool_respond
@@ -509,7 +515,7 @@ domain/
       providers.py                 # Plan 专属 providers
     write/
       writeAgent.py                # 写作 executor
-      tools.py                     # 写作工具声明
+      tools.py                     # 写作工具兼容导入入口
   context/
     context.py                     # ContextEngine
     providers.py                   # 通用 providers
@@ -526,6 +532,7 @@ infra/
     builtin/
       declare.py                   # 通用工具声明
       system.py                    # bash 工具声明和实现
-    tools_attach_methods.py        # 工具事件绑定和工具实现
+      story_write.py               # 写作工具声明、注册和实现
+    tools_attach_methods.py        # 通用中间件与工具成功/失败回调
     common_func.py                 # 工具事件辅助函数
 ```
