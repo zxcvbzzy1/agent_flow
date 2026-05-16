@@ -30,6 +30,11 @@ plan agent构建，基于agent基类构建计划型agent
 
 ## 工具注入与事件调用流程
 
+### 流程示意图
+
+![alt text](assets/工具注册实现流.png)
+
+
 ### 涉及文件
 
 1. `domain/tool.py`
@@ -222,6 +227,10 @@ async def confirm(**kwargs) -> Event:
 
 ## 上下文管理流程
 
+### 流程示意图
+
+![alt text](assets/上下文管理.png)
+
 ### 涉及文件
 
 1. `domain/context/context.py`
@@ -306,6 +315,10 @@ step_context_engine = ContextEngine(
 
 
 ## Agent 体系
+
+### 流程示意图
+
+![alt text](assets/编排者执行者流.png)
 
 ### AgentBase
 

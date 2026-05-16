@@ -59,10 +59,10 @@ class Plan:
             self.steps.append(PlanStep(
                 step_id=s.get("step_id", str(uuid.uuid4())[:8]),
                 title=s.get("title", ""),
-                instruction=s.get("instruction", s.get("detail", "")),
+                instruction=s.get("instruction", ""),
                 executor_id=s.get("executor_id", ""),
                 depends_on=s.get("depends_on", []),
-                result_observation=s.get("result_observation", s.get("observation", "")),
+                result_observation=s.get("result_observation", ""),
             ))
 
     def update_step(self, step_id: str, title: str | None = None,
@@ -70,15 +70,7 @@ class Plan:
                     status_reason: str | None = None,
                     executor_id: str | None = None,
                     depends_on: list[str] | None = None,
-                    result_observation: str | None = None,
-                    **legacy_fields) -> PlanStep | None:
-        if instruction is None:
-            instruction = legacy_fields.get("detail")
-        if status_reason is None:
-            status_reason = legacy_fields.get("note")
-        if result_observation is None:
-            result_observation = legacy_fields.get("observation")
-
+                    result_observation: str | None = None) -> PlanStep | None:
         for step in self.steps:
             if step.step_id == step_id:
                 if title  is not None: step.title  = title
@@ -146,12 +138,12 @@ def _dict_to_plan(plan_dict: dict) -> Plan:
         step = PlanStep(
             step_id=s["step_id"],
             title=s["title"],
-            instruction=s.get("instruction", s.get("detail", "")),
+            instruction=s.get("instruction", ""),
             executor_id=s.get("executor_id", ""),
             depends_on=s.get("depends_on", []),
-            result_observation=s.get("result_observation", s.get("observation", "")),
+            result_observation=s.get("result_observation", ""),
             status=s.get("status", "pending"),
-            status_reason=s.get("status_reason", s.get("note", "")),
+            status_reason=s.get("status_reason", ""),
             created_at=s.get("created_at", 0),
             updated_at=s.get("updated_at", 0),
         )
