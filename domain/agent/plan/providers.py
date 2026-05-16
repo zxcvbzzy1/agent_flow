@@ -61,8 +61,8 @@ class PlanObservationProvider(ContextProvider):
                 f"- [{step.get('step_id')}] {step.get('title')} "
                 f"status={step.get('status')} executor_id={step.get('executor_id')} "
                 f"depends_on={step.get('depends_on', [])}\n"
-                f"  instruction: {step.get('instruction', step.get('detail', ''))}\n"
-                f"  result_observation: {step.get('result_observation', step.get('observation', ''))}"
+                f"  instruction: {step.get('instruction', '')}\n"
+                f"  result_observation: {step.get('result_observation', '')}"
             )
 
         parts.extend(["", "## 计划执行观察"])
@@ -73,9 +73,7 @@ class PlanObservationProvider(ContextProvider):
         for step in observed_steps:
             result_observation = (
                 step.get("result_observation")
-                or step.get("observation")
                 or step.get("status_reason")
-                or step.get("note")
                 or ""
             )
             parts.append(
@@ -99,20 +97,17 @@ class PlanStepPromptProvider(ContextProvider):
         if isinstance(step, dict):
             step_id = step.get("step_id", "")
             title = step.get("title", "")
-            instruction = step.get("instruction", step.get("detail", ""))
+            instruction = step.get("instruction", "")
             depends_on = step.get("depends_on", [])
         else:
             step_id = getattr(step, "step_id", "")
             title = getattr(step, "title", "")
-            instruction = getattr(step, "instruction", getattr(step, "detail", ""))
+            instruction = getattr(step, "instruction", "")
             depends_on = getattr(step, "depends_on", [])
 
         dependency_observations = []
         for plan_step in state.get("plan", {}).get("steps", []):
-            result_observation = plan_step.get(
-                "result_observation",
-                plan_step.get("observation", ""),
-            )
+            result_observation = plan_step.get("result_observation", "")
             if plan_step.get("step_id") in depends_on and result_observation:
                 dependency_observations.append(
                     f"- [{plan_step.get('step_id')}] {plan_step.get('title')}: "
