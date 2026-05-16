@@ -57,18 +57,18 @@ class PlanOrchestrator:
         self,
         planner: PlanAgent,
         executors: dict[str, AgentBase],
-        state: OrchestratorState,
         step_context_engine: ContextEngine,
         event_bus: EventBusPort | None = None,
+        state: OrchestratorState = OrchestratorState(),
         max_replan_rounds: int = 5,
     ) -> None:
         self.planner = planner
         self.executors = executors
-        self.state = state
         self.step_context_engine = step_context_engine
         self.event_bus = event_bus
         self.max_replan_rounds = max_replan_rounds
         self._replan_rounds = 0
+        self.state = state 
 
     async def start(self, prompt: str) -> None:
         self._dispatch({
