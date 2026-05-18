@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+from domain.agent.plan.planAgent import PlanAgent
+from domain.agent_base import AgentBase
+from infra.LLM.LLM_infra import LLM_Client
+from infra.db.mongodb import DocumentStore
+
+from application.services.contexts import ContextService
+
+
+class APIExecutorAgent(AgentBase):
+    def __init__(self, *args, role_prompt: str = "", **kwargs) -> None:
+        self._role_prompt = role_prompt
+        super().__init__(*args, **kwargs)
+
+    def _build_agent_prompt(self) -> str:
+        if self._role_prompt:
+            return self._role_prompt
+        return super()._build_agent_prompt()
+
+
+class AgentFactoryService:
+    def __init__(
+        self,
+        store: DocumentStore,
+        context_service: ContextService,
+        llm_client: LLM_Client,
+    ) -> None:
+        self._store = store
+        self._contexts = context_service
+        self._llm = llm_client
+        self._agents: dict[str, AgentBase | PlanAgent] = {}
+        self.ensure_default_agents()
+
+    def ensure_default_agents(self) -> None:
+        if self._store.find_one("agents", {"agent_id": "default_planner"}) is None:
+            self.create_agent(
+                agent_id="default_planner",
+                name="默认任务编排者",
+                agent_type="planner",
+                context_id="default_planner",
+            )
+        if self._store.find_one("agents", {"agent_id": "default_executor"}) is None:
+            self.create_agent(
+                agent_id="default_executor",
+                name="默认执行者",
+                agent_type="executor",
+                context_id="default_executor",
+                role_prompt="""
+你是一个通用 ReACT 执行者，请根据上下文选择工具完成任务。
+
+## 输出格式
+用 JSON 严格按以下格式回复：
+{
+  "think": "你的思考",
+  "tool_calls": [
+    {
+      "tool_name": "工具名",
+      "arguments": {"参数名": "参数值"},
+      "reasoning": "为什么调用这个工具"
+    }
+  ],
+  "is_finished": false
+}
+
+## 任务完成时输出
+{
+  "think": "...",
+  "tool_calls": [],
+  "is_finished": true,
+  "finish_reason": "完成原因",
+  "final": "最终结果"
+}
+""",
+            )
+
+    def create_agent(
+        self,
+        name: str,
+        agent_type: str,
+        context_id: str,
+        role_prompt: str = "",
+        agent_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        agent_id = agent_id or str(uuid.uuid4())
+        record = {
+            "agent_id": agent_id,
+            "name": name,
+            "agent_type": agent_type,
+            "context_id": context_id,
+            "role_prompt": role_prompt,
+            "metadata": metadata or {},
+        }
+        self._store.update_one("agents", {"agent_id": agent_id}, record, upsert=True)
+        self._agents[agent_id] = self._build_agent(record)
+        return record
+
+    def list_agents(self) -> list[dict[str, Any]]:
+        return self._store.find_many("agents", sort=[("created_at", 1)])
+
+    def get_agent_record(self, agent_id: str) -> dict[str, Any] | None:
+        return self._store.find_one("agents", {"agent_id": agent_id})
+
+    def get_agent(self, agent_id: str) -> AgentBase | PlanAgent:
+        if agent_id not in self._agents:
+            record = self.get_agent_record(agent_id)
+            if record is None:
+                raise KeyError(f"Agent 不存在: {agent_id}")
+            self._agents[agent_id] = self._build_agent(record)
+        return self._agents[agent_id]
+
+    def _build_agent(self, record: dict[str, Any]) -> AgentBase | PlanAgent:
+        context = self._contexts.get_engine(record["context_id"])
+        if record.get("agent_type") == "planner":
+            return PlanAgent(
+                id=record["agent_id"],
+                name=record["name"],
+                llm=self._llm,
+                context=context,
+            )
+        return APIExecutorAgent(
+            id=record["agent_id"],
+            name=record["name"],
+            llm=self._llm,
+            context=context,
+            role_prompt=record.get("role_prompt", ""),
+        )
