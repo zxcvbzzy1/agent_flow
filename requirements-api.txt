@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+pymongo
+python-multipart
+httpx
+pytest
+pytest-asyncio
