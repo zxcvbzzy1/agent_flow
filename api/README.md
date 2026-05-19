@@ -332,6 +332,68 @@ data: {"event_id":"...","run_id":"...","name":"workflow.started","payload":{}}
 - `plan.wave.completed`
 - `workflow.finished`
 - `workflow.failed`
+- `tool.called`
+- `tool.succeeded`
+- `tool.failed`
+- `tool.retrying`
+- `agent.failed`
+- `plan.step.failed`
+- `human.confirmation.requested`
+- `human.confirmation.resolved`
+
+`tool.*`、`agent.failed`、`plan.step.failed` 来自内部 `infra.eventbus` 到前端 SSE 的应用层桥接。它们只用于前端观察，不改变内部工具执行流程。
+
+### `GET /api/runs/{run_id}/confirmations`
+
+查询当前 run 等待网页处理的人类确认请求。
+
+响应结构：
+
+```json
+{
+  "items": [
+    {
+      "confirmation_id": "uuid",
+      "run_id": "uuid",
+      "agent_id": "default_executor",
+      "tool_name": "bash",
+      "called_event_name": "infra.system.bash.called",
+      "arguments": {
+        "command": "pwd"
+      },
+      "status": "pending",
+      "created_at": 1710000000.0
+    }
+  ]
+}
+```
+
+### `POST /api/runs/{run_id}/confirmations/{confirmation_id}`
+
+批准或拒绝网页人类确认请求。该接口会唤醒等待中的工具调用协程，并向 SSE 推送 `human.confirmation.resolved`。
+
+请求体：
+
+```json
+{
+  "approved": true,
+  "reason": "允许执行"
+}
+```
+
+响应结构：
+
+```json
+{
+  "item": {
+    "confirmation_id": "uuid",
+    "run_id": "uuid",
+    "status": "resolved",
+    "approved": true,
+    "reason": "允许执行"
+  }
+}
+```
 
 ## 会话、消息与队列接口
 
@@ -475,4 +537,3 @@ export AGENT_FLOW_CORS_ORIGINS="http://localhost:5173,http://127.0.0.1:5173,http
 ```text
 api_services_test.py
 ```
-

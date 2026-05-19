@@ -12,3 +12,8 @@ class RunCreateRequest(BaseModel):
     conversation_id: str | None = None
     message_id: str | None = None
     auto_start: bool = True
+
+
+class ConfirmationResolveRequest(BaseModel):
+    approved: bool
+    reason: str = ""
