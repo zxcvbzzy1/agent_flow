@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 import httpx
 import pytest
@@ -16,6 +17,7 @@ from domain.runtime_hooks import (
     register_human_approval_provider,
     register_run_context_provider,
 )
+from application.services.llm_streaming import StreamingObservableLLMClient
 from infra.tool.common_func import HumanCollaborationAuditor, human_approval_service
 
 
@@ -86,6 +88,18 @@ class _FakeToolFactory:
 
     def tool(self, tool_name: str):
         return self.handle
+
+
+class _StreamingFakeLLM:
+    model = "fake-model"
+    max_tokens = 1024
+
+    def __init__(self, chunks: list[str]) -> None:
+        self.chunks = chunks
+
+    async def stream_chat(self, messages, model=None):
+        for chunk in self.chunks:
+            yield chunk
 
 
 def test_health_and_cors_headers():
@@ -397,3 +411,75 @@ async def test_agent_base_run_one_does_not_inject_run_id():
     await agent._run_one(ToolCall(tool_name="bash", arguments={"command": "pwd"}))
 
     assert handle.payload == {"command": "pwd", "agent_id": "agent-no-run-payload"}
+
+
+@pytest.mark.asyncio
+async def test_streaming_observable_llm_publishes_executor_delta_and_structured_events():
+    container = get_container()
+    run_id = f"llm-stream-executor-run-{uuid.uuid4()}"
+    previous_run_context = get_run_context_provider()
+    chunks = [
+        '{"think":"先检查目录",',
+        '"tool_calls":[{"tool_name":"bash","arguments":{"command":"pwd"},"reasoning":"需要确认当前路径"}],',
+        '"is_finished":false}',
+    ]
+    try:
+        register_run_context_provider(_StaticRunContextProvider(run_id))
+        llm = StreamingObservableLLMClient(
+            _StreamingFakeLLM(chunks),
+            container.events,
+            agent_id="executor-stream-agent",
+            agent_name="Executor Stream Agent",
+            agent_type="executor",
+        )
+
+        result = await llm.chat([{"role": "system", "content": "executor"}, {"role": "user", "content": "go"}])
+        events = container.events.list_events(run_id)
+        names = [event["name"] for event in events]
+
+        assert result == "".join(chunks)
+        assert names.count("llm.delta") == 3
+        assert "llm.started" in names
+        assert "llm.completed" in names
+        assert "agent.think" in names
+        assert "agent.tool.reasoning" in names
+        reasoning = [event for event in events if event["name"] == "agent.tool.reasoning"][-1]
+        assert reasoning["payload"]["tool_name"] == "bash"
+        assert reasoning["payload"]["reasoning"] == "需要确认当前路径"
+    finally:
+        register_run_context_provider(previous_run_context)
+
+
+@pytest.mark.asyncio
+async def test_streaming_observable_llm_publishes_planner_events():
+    container = get_container()
+    run_id = f"llm-stream-planner-run-{uuid.uuid4()}"
+    previous_run_context = get_run_context_provider()
+    chunks = [
+        '{"steps":[{"step_id":"1","title":"分析需求","instruction":"阅读输入",',
+        '"executor_id":"default_executor","depends_on":[]}]}',
+    ]
+    try:
+        register_run_context_provider(_StaticRunContextProvider(run_id))
+        llm = StreamingObservableLLMClient(
+            _StreamingFakeLLM(chunks),
+            container.events,
+            agent_id="planner-stream-agent",
+            agent_name="Planner Stream Agent",
+            agent_type="planner",
+        )
+
+        result = await llm.chat(
+            [
+                {"role": "system", "content": "请生成结构化计划，输出 steps"},
+                {"role": "user", "content": "go"},
+            ]
+        )
+        events = container.events.list_events(run_id)
+        plan_event = [event for event in events if event["name"] == "planner.plan.generated"][-1]
+
+        assert result == "".join(chunks)
+        assert plan_event["payload"]["planner_id"] == "planner-stream-agent"
+        assert plan_event["payload"]["steps"][0]["title"] == "分析需求"
+    finally:
+        register_run_context_provider(previous_run_context)

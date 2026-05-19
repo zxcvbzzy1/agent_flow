@@ -155,6 +155,7 @@ class RunOrchestrationService:
             planner = self._agents.get_agent(record["planner_agent_id"])
             if not isinstance(planner, PlanAgent):
                 raise TypeError("planner_agent_id 必须指向 planner agent")
+            self._frontend_bridge.register_agent_run(planner.id, run_id)
 
             executors: dict[str, AgentBase] = {}
             for executor_id in record["executor_agent_ids"]:
@@ -204,6 +205,7 @@ class RunOrchestrationService:
             self._complete_conversation_queue(record=record, status="failed", final=str(exc))
             self._streams.publish(run_id, "workflow.failed", {"error": str(exc)})
         finally:
+            self._frontend_bridge.unregister_agent_run(record.get("planner_agent_id", ""), run_id)
             for executor_id in record.get("executor_agent_ids", []):
                 self._frontend_bridge.unregister_agent_run(executor_id, run_id)
 
