@@ -26,8 +26,12 @@ class LLM_Client:
         self.max_tokens =max_tokens
 
     async def default_call(self, messages: list, model: str):
-        stream =await self.client.chat.completions.create(
-            model=model,
+        async for delta in self.stream_chat(messages, model=model):
+            yield delta
+
+    async def stream_chat(self, messages: list, model: str | None = None):
+        stream = await self.client.chat.completions.create(
+            model=model or self.model,
             messages=messages,
             max_tokens=self.max_tokens,
             stream=True,
@@ -41,22 +45,9 @@ class LLM_Client:
     
     async def chat(self, messages: list):
         full_response = ""
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            max_tokens=self.max_tokens,
-            stream=True,
-            extra_body={"reasoning_split": True},
-        )
-
-        async for chunk in response:
-            # 获取 delta 内容
-            delta = chunk.choices[0].delta.content
-            if delta:
-                print(delta, end="", flush=True)
-                full_response += delta
+        async for delta in self.stream_chat(messages, model=self.model):
+            print(delta, end="", flush=True)
+            full_response += delta
         return full_response
 
     
-
-

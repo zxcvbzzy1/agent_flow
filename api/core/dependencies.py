@@ -34,7 +34,7 @@ class ServiceContainer:
         register_run_context_provider(self.frontend_bridge)
         self.tools = ToolRegistryService(self.store, self.root_dir)
         self.contexts = ContextService(self.store)
-        self.agents = AgentFactoryService(self.store, self.contexts, llm_client)
+        self.agents = AgentFactoryService(self.store, self.contexts, llm_client, self.events)
         self.runs = RunOrchestrationService(
             self.store,
             self.agents,
