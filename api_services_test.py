@@ -1,9 +1,91 @@
 from __future__ import annotations
 
+import asyncio
+
+import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from api.core.dependencies import get_container
 from api.index import app
+from domain.agent_base import AgentBase, ToolCall
+from domain.event import Event
+from domain.runtime_hooks import (
+    get_human_approval_provider,
+    get_run_context_provider,
+    register_human_approval_provider,
+    register_run_context_provider,
+)
+from infra.tool.common_func import HumanCollaborationAuditor, human_approval_service
+
+
+class _HumanConfirmSpec:
+    tool_name = "bash"
+    tool_metadata = {"require_human_confirm": True}
+
+
+class _HumanConfirmFactory:
+    def get_spec(self, event_name: str):
+        return _HumanConfirmSpec()
+
+
+class _RecordingHumanBus:
+    def __init__(self) -> None:
+        self.events = []
+
+    async def publish_one(self, event: Event):
+        self.events.append(event)
+        return Event("human.bash.confirmed", {"approved": True, "reason": "terminal ok"})
+
+
+class _HumanInputBus:
+    def __init__(self) -> None:
+        self.events = []
+
+    async def publish_one(self, event: Event):
+        self.events.append(event)
+        answer = (await human_approval_service.input("confirm?")).strip().lower()
+        approved = answer in {"yes", "y"}
+        return Event(
+            "human.bash.confirmed",
+            {
+                "approved": approved,
+                "reason": "input approved" if approved else f"input rejected: {answer}",
+            },
+        )
+
+
+class _RecordingApprovalProvider:
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def request_approval(self, **kwargs):
+        self.requests.append(kwargs)
+        return {"approved": True, "reason": "web ok"}
+
+
+class _StaticRunContextProvider:
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+
+    def run_id_for_agent(self, agent_id: str) -> str:
+        return self.run_id
+
+
+class _FakeToolHandle:
+    def __init__(self) -> None:
+        self.payload = None
+
+    async def emit_called(self, payload):
+        self.payload = payload
+
+
+class _FakeToolFactory:
+    def __init__(self, handle: _FakeToolHandle) -> None:
+        self.handle = handle
+
+    def tool(self, tool_name: str):
+        return self.handle
 
 
 def test_health_and_cors_headers():
@@ -114,3 +196,204 @@ def test_event_stream_service_formats_historical_finished_event():
     assert [event["name"] for event in events] == ["workflow.started", "workflow.finished"]
     assert "event: workflow.finished" in container.events.format_sse(events[-1])
 
+
+def test_frontend_bridge_mirrors_tool_events_to_run_stream():
+    container = get_container()
+    run_id = "bridge-test-run"
+
+    container.frontend_bridge.register_agent_run("bridge_agent", run_id)
+    container.frontend_bridge.mirror_tool_event(
+        Event(
+            name="infra.system.bash.called",
+            payload={"agent_id": "bridge_agent", "run_id": run_id, "command": "echo hi"},
+        )
+    )
+    container.frontend_bridge.mirror_tool_event(
+        Event(
+            name="infra.system.bash.failed",
+            payload={"agent_id": "bridge_agent", "name": "bash", "success": False, "respond": "no"},
+        )
+    )
+
+    events = container.events.list_events(run_id)
+
+    assert [event["name"] for event in events[-2:]] == ["tool.called", "tool.failed"]
+    assert events[-1]["payload"]["respond"] == "no"
+
+
+@pytest.mark.asyncio
+async def test_human_confirmation_can_be_requested_and_resolved():
+    container = get_container()
+    run_id = "confirm-test-run"
+
+    task = asyncio.create_task(
+        container.human_confirmations.request_confirmation(
+            run_id=run_id,
+            agent_id="agent_001",
+            tool_name="bash",
+            called_event_name="infra.system.bash.called",
+            arguments={"command": "echo hi"},
+        )
+    )
+    await asyncio.sleep(0)
+
+    pending = container.human_confirmations.list_pending(run_id)
+    assert len(pending) == 1
+    assert pending[0]["status"] == "pending"
+
+    resolved = container.human_confirmations.resolve(
+        run_id=run_id,
+        confirmation_id=pending[0]["confirmation_id"],
+        approved=True,
+        reason="ok",
+    )
+    result = await task
+    events = container.events.list_events(run_id)
+
+    assert result == {"approved": True, "reason": "ok"}
+    assert resolved["approved"] is True
+    assert [event["name"] for event in events[-2:]] == [
+        "human.confirmation.requested",
+        "human.confirmation.resolved",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_confirmation_api_lists_and_resolves_pending_request():
+    container = get_container()
+    run_id = "confirm-api-run"
+
+    task = asyncio.create_task(
+        container.human_confirmations.request_confirmation(
+            run_id=run_id,
+            agent_id="agent_001",
+            tool_name="bash",
+            called_event_name="infra.system.bash.called",
+            arguments={"command": "pwd"},
+        )
+    )
+    await asyncio.sleep(0)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pending_response = await client.get(f"/api/runs/{run_id}/confirmations")
+        pending = pending_response.json()["items"]
+
+        assert pending_response.status_code == 200
+        assert len(pending) == 1
+
+        resolve_response = await client.post(
+            f"/api/runs/{run_id}/confirmations/{pending[0]['confirmation_id']}",
+            json={"approved": False, "reason": "deny"},
+        )
+    result = await task
+
+    assert resolve_response.status_code == 200
+    assert resolve_response.json()["item"]["approved"] is False
+    assert result == {"approved": False, "reason": "deny"}
+
+
+@pytest.mark.asyncio
+async def test_human_collaboration_uses_web_confirmation_when_run_context_exists(monkeypatch):
+    monkeypatch.delenv("AGENT_FLOW_AUTO_CONFIRM", raising=False)
+    previous_provider = get_human_approval_provider()
+    previous_run_context = get_run_context_provider()
+    previous_input_func = human_approval_service.input_func
+    provider = _RecordingApprovalProvider()
+    run_context = _StaticRunContextProvider("run-from-context")
+    bus = _HumanInputBus()
+    try:
+        register_human_approval_provider(provider)
+        register_run_context_provider(run_context)
+        auditor = HumanCollaborationAuditor(_HumanConfirmFactory(), bus)
+
+        result = await auditor.audit(
+            Event(
+                "infra.system.bash.called",
+                {"agent_id": "agent-web", "command": "pwd"},
+            )
+        )
+
+        assert result.approved is True
+        assert result.reason == "input approved"
+        assert bus.events[0].name == "human.bash"
+        assert provider.requests == [
+            {
+                "run_id": "run-from-context",
+                "agent_id": "agent-web",
+                "tool_name": "bash",
+                "called_event_name": "infra.system.bash.called",
+                "arguments": {"agent_id": "agent-web", "command": "pwd"},
+            }
+        ]
+    finally:
+        register_human_approval_provider(previous_provider)
+        register_run_context_provider(previous_run_context)
+        human_approval_service.input_func = previous_input_func
+
+
+@pytest.mark.asyncio
+async def test_human_collaboration_falls_back_to_human_event_without_run_context(monkeypatch):
+    monkeypatch.delenv("AGENT_FLOW_AUTO_CONFIRM", raising=False)
+    previous_provider = get_human_approval_provider()
+    previous_run_context = get_run_context_provider()
+    provider = _RecordingApprovalProvider()
+    bus = _RecordingHumanBus()
+    try:
+        register_human_approval_provider(provider)
+        register_run_context_provider(_StaticRunContextProvider(""))
+        auditor = HumanCollaborationAuditor(_HumanConfirmFactory(), bus)
+
+        result = await auditor.audit(
+            Event(
+                "infra.system.bash.called",
+                {"agent_id": "agent-terminal", "command": "pwd"},
+            )
+        )
+
+        assert result.approved is True
+        assert result.reason == "terminal ok"
+        assert provider.requests == []
+        assert bus.events[0].name == "human.bash"
+    finally:
+        register_human_approval_provider(previous_provider)
+        register_run_context_provider(previous_run_context)
+
+
+@pytest.mark.asyncio
+async def test_human_approval_service_input_func_can_replace_confirmation_policy(monkeypatch):
+    monkeypatch.delenv("AGENT_FLOW_AUTO_CONFIRM", raising=False)
+    previous_input_func = human_approval_service.input_func
+    bus = _HumanInputBus()
+
+    async def deny_all_policy(prompt):
+        return "no custom deny"
+
+    try:
+        human_approval_service.input_func = deny_all_policy
+        auditor = HumanCollaborationAuditor(_HumanConfirmFactory(), bus)
+
+        result = await auditor.audit(
+            Event(
+                "infra.system.bash.called",
+                {"agent_id": "agent-custom-policy", "command": "pwd"},
+            )
+        )
+
+        assert result.approved is False
+        assert result.reason == "input rejected: no custom deny"
+        assert bus.events[0].name == "human.bash"
+    finally:
+        human_approval_service.input_func = previous_input_func
+
+
+@pytest.mark.asyncio
+async def test_agent_base_run_one_does_not_inject_run_id():
+    agent = AgentBase("agent-no-run-payload", "No Run Payload", object(), object())
+    handle = _FakeToolHandle()
+    agent.tool_factory = _FakeToolFactory(handle)
+    agent.states["run_id"] = "must-not-leak"
+
+    await agent._run_one(ToolCall(tool_name="bash", arguments={"command": "pwd"}))
+
+    assert handle.payload == {"command": "pwd", "agent_id": "agent-no-run-payload"}

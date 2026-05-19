@@ -14,6 +14,8 @@ from infra.db.mongodb import DocumentStore
 
 from application.services.agents import AgentFactoryService
 from application.services.contexts import ContextService
+from application.events.bridge import FrontendEventBridge
+from application.events.schemas import step_failed_payload
 from application.services.events import EventStreamService
 
 
@@ -38,6 +40,7 @@ class ObservablePlanOrchestrator(PlanOrchestrator):
     def __init__(self, *args, run_id: str, streams: EventStreamService, **kwargs) -> None:
         self._run_id = run_id
         self._streams = streams
+        self._reported_failed_steps: set[str] = set()
         super().__init__(*args, **kwargs)
 
     def _dispatch(self, action: dict) -> None:
@@ -45,6 +48,7 @@ class ObservablePlanOrchestrator(PlanOrchestrator):
         event_name = action.get("event_dispatch", "workflow.event")
         payload = self._normalize_payload(action.get("playload", {}))
         self._streams.publish(self._run_id, event_name, payload)
+        self._publish_failed_steps(payload)
 
     def _normalize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = {}
@@ -55,6 +59,38 @@ class ObservablePlanOrchestrator(PlanOrchestrator):
                 normalized[key] = value
         return normalized
 
+    async def _run_plan_step(self, step, plan) -> None:
+        await super()._run_plan_step(step, plan)
+        if step.status == "failed":
+            self._streams.publish(
+                self._run_id,
+                "agent.failed",
+                step_failed_payload(
+                    run_id=self._run_id,
+                    executor_id=step.executor_id,
+                    step=step.to_dict(),
+                ),
+            )
+
+    def _publish_failed_steps(self, payload: dict[str, Any]) -> None:
+        steps = payload.get("plan", {}).get("steps", [])
+        for step in steps:
+            if step.get("status") != "failed":
+                continue
+            step_id = step.get("step_id", "")
+            if not step_id or step_id in self._reported_failed_steps:
+                continue
+            self._reported_failed_steps.add(step_id)
+            self._streams.publish(
+                self._run_id,
+                "plan.step.failed",
+                step_failed_payload(
+                    run_id=self._run_id,
+                    executor_id=step.get("executor_id", ""),
+                    step=step,
+                ),
+            )
+
 
 class RunOrchestrationService:
     def __init__(
@@ -63,11 +99,13 @@ class RunOrchestrationService:
         agent_service: AgentFactoryService,
         context_service: ContextService,
         streams: EventStreamService,
+        frontend_bridge: FrontendEventBridge,
     ) -> None:
         self._store = store
         self._agents = agent_service
         self._contexts = context_service
         self._streams = streams
+        self._frontend_bridge = frontend_bridge
         self._tasks: dict[str, asyncio.Task] = {}
 
     def create_run(
@@ -123,6 +161,7 @@ class RunOrchestrationService:
                 executor = self._agents.get_agent(executor_id)
                 if not isinstance(executor, AgentBase):
                     raise TypeError(f"executor_agent_id 不是执行型 agent: {executor_id}")
+                self._frontend_bridge.register_agent_run(executor.id, run_id)
                 executors[executor_id] = executor
 
             step_context = self._contexts.get_engine(record["context_id"])
@@ -164,6 +203,9 @@ class RunOrchestrationService:
             )
             self._complete_conversation_queue(record=record, status="failed", final=str(exc))
             self._streams.publish(run_id, "workflow.failed", {"error": str(exc)})
+        finally:
+            for executor_id in record.get("executor_agent_ids", []):
+                self._frontend_bridge.unregister_agent_run(executor_id, run_id)
 
     def _complete_conversation_queue(self, record: dict[str, Any], status: str, final: str) -> None:
         conversation_id = record.get("conversation_id")

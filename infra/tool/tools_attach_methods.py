@@ -1,4 +1,7 @@
+import inspect
+
 from domain.event import EventBusReturn, Event
+from domain.runtime_hooks import get_tool_event_observer
 from infra.event_bind import On_bind
 from infra.config import factory, agent_dict, bus
 from infra.tool.common_func import HumanCollaborationAuditor
@@ -27,6 +30,20 @@ async def logging_middleware(event: Event, call_next):
     except Exception as e:
         print(f"[ERROR]  {agent_id}  事件异常: {event.name} -> {e}")
         raise   # ⚠️ 一定要 rethrow
+
+
+# frontend_sse_bridge middleware
+@on_tool.use()
+async def frontend_sse_bridge_middleware(event: Event, call_next):
+    try:
+        observer = get_tool_event_observer()
+        if observer is not None:
+            result = observer.on_tool_event(event)
+            if inspect.isawaitable(result):
+                await result
+    except Exception as exc:
+        print(f"[SSE-BRIDGE] 工具事件镜像失败: {event.name} -> {exc}")
+    return await call_next()
 
 
 # human_collaboration middleware
@@ -73,4 +90,3 @@ async def on_tool_fail(**kwargs):  # event.playload为Tool_respond类，kwargs�
 #         respond=kwargs.get("respond"),
 #         callBack=callBack
 #     )
-

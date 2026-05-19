@@ -74,7 +74,7 @@ class AgentBase(ABC):
         self.states_manage  = Agent_state()
         self.states         = self.states_manage.get_state()
         self.tool_factory   = ToolEventFactory(prefix="infra")
-        self.work_path      = "/Users/zxcvbzzy1/Desktop/项目/agent_flow/temp"  # 默认工作目录
+        self.work_path      = "/Users/zxcvbzzy1/Desktop/项目/agent_full_stack/agent_flow/temp"  # 默认工作目录
         self.context_engine = context
         self._tool_done     = asyncio.Event()
         self._pending_tools = 0
