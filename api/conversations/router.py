@@ -40,6 +40,17 @@ async def get_conversation(
     return {"item": item}
 
 
+@router.delete("/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    service: ConversationService = Depends(get_conversation_service),
+):
+    try:
+        return {"item": service.delete_conversation(conversation_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/{conversation_id}/messages")
 async def list_messages(
     conversation_id: str,
@@ -118,4 +129,3 @@ async def create_run_from_conversation(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"item": run}
-

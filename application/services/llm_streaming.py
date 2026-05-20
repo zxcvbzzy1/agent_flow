@@ -49,7 +49,7 @@ class StreamingObservableLLMClient:
             full_response += delta
             sequence += 1
             if run_id:
-                self._publish(
+                self._sse_publish(
                     run_id,
                     "llm.delta",
                     {
@@ -81,6 +81,19 @@ class StreamingObservableLLMClient:
 
     def _publish(self, run_id: str, name: str, payload: dict[str, Any]) -> None:
         self._streams.publish(
+            run_id,
+            name,
+            {
+                "run_id": run_id,
+                "agent_id": self.agent_id,
+                "agent_name": self.agent_name,
+                "agent_type": self.agent_type,
+                **payload,
+            },
+        )
+
+    def _sse_publish(self, run_id: str, name: str, payload: dict[str, Any]) -> None:
+        self._streams.no_store_publish(
             run_id,
             name,
             {

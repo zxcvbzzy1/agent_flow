@@ -32,6 +32,31 @@ class ConversationService:
     def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
         return self._store.find_one("conversations", {"conversation_id": conversation_id})
 
+    def delete_conversation(self, conversation_id: str) -> dict[str, Any]:
+        conversation = self.get_conversation(conversation_id)
+        if conversation is None:
+            raise KeyError(f"会话不存在: {conversation_id}")
+
+        messages = self.list_messages(conversation_id)
+        queue_items = self.list_queue(conversation_id)
+        runs = self._store.find_many("runs", {"conversation_id": conversation_id})
+        run_ids = {
+            item.get("run_id")
+            for item in [conversation, *messages, *queue_items, *runs]
+            if item.get("run_id")
+        }
+
+        stats = {
+            "conversations": self._store.delete_one("conversations", {"conversation_id": conversation_id}),
+            "messages": self._store.delete_many("messages", {"conversation_id": conversation_id}),
+            "message_queue": self._store.delete_many("message_queue", {"conversation_id": conversation_id}),
+            "runs": self._store.delete_many("runs", {"conversation_id": conversation_id}),
+            "events": 0,
+        }
+        for run_id in run_ids:
+            stats["events"] += self._store.delete_many("events", {"run_id": run_id})
+        return {"deleted": True, "conversation_id": conversation_id, "stats": stats}
+
     def add_message(
         self,
         conversation_id: str,
@@ -128,4 +153,3 @@ class ConversationService:
         if not messages:
             raise KeyError("没有可入队的用户消息")
         return messages[-1]
-
