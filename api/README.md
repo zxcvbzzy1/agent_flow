@@ -343,6 +343,24 @@ database: agent_flow
 - `running`
 - `finished`
 - `failed`
+- `cancelled`
+
+### `POST /api/runs/{run_id}/cancel`
+
+中断当前 run。中断后 run 状态会更新为 `cancelled`，并复用 `workflow.failed` SSE 终止事件，payload 中包含 `"cancelled": true`。
+
+响应结构：
+
+```json
+{
+  "item": {
+    "run_id": "uuid",
+    "status": "cancelled",
+    "cancel_reason": "用户中断",
+    "finished_at": 1710000000.0
+  }
+}
+```
 
 ### `GET /api/runs/{run_id}/events`
 
@@ -381,6 +399,8 @@ data: {"event_id":"...","run_id":"...","name":"workflow.started","payload":{}}
 - `human.confirmation.resolved`
 
 `tool.*`、`agent.failed`、`plan.step.failed` 来自内部 `infra.eventbus` 到前端 SSE 的应用层桥接。它们只用于前端观察，不改变内部工具执行流程。
+
+用户中断 run 时也会发送 `workflow.failed`，通过 `payload.cancelled === true` 区分普通失败。
 
 ### `GET /api/runs/{run_id}/confirmations`
 

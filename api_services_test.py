@@ -199,6 +199,69 @@ def test_context_agent_run_and_conversation_apis():
     assert queue[-1]["message_id"] == message["message_id"]
 
 
+def test_cancel_pending_run_marks_cancelled_and_publishes_workflow_failed():
+    client = TestClient(app)
+    container = get_container()
+
+    run = client.post(
+        "/api/runs",
+        json={
+            "prompt": "cancel pending run",
+            "planner_agent_id": "default_planner",
+            "executor_agent_ids": ["default_executor"],
+            "context_id": "default_step",
+            "auto_start": False,
+        },
+    ).json()["item"]
+
+    response = client.post(f"/api/runs/{run['run_id']}/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["item"]["status"] == "cancelled"
+    stored = client.get(f"/api/runs/{run['run_id']}").json()["item"]
+    assert stored["status"] == "cancelled"
+    events = container.events.list_events(run["run_id"])
+    assert events[-1]["name"] == "workflow.failed"
+    assert events[-1]["payload"]["cancelled"] is True
+    assert client.post(f"/api/runs/{run['run_id']}/cancel").status_code == 200
+    assert client.post("/api/runs/not-found/cancel").status_code == 404
+
+
+def test_cancel_run_updates_related_conversation_queue():
+    client = TestClient(app)
+
+    conversation = client.post(
+        "/api/conversations",
+        json={"title": "Cancel Queue"},
+    ).json()["item"]
+    message = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        json={"role": "user", "content": "cancel queued run"},
+    ).json()["item"]
+    client.post(
+        f"/api/conversations/{conversation['conversation_id']}/queue",
+        json={"message_id": message["message_id"]},
+    )
+    run = client.post(
+        "/api/runs",
+        json={
+            "prompt": message["content"],
+            "planner_agent_id": "default_planner",
+            "executor_agent_ids": ["default_executor"],
+            "context_id": "default_step",
+            "conversation_id": conversation["conversation_id"],
+            "message_id": message["message_id"],
+            "auto_start": False,
+        },
+    ).json()["item"]
+
+    response = client.post(f"/api/runs/{run['run_id']}/cancel")
+    queue = client.get(f"/api/conversations/{conversation['conversation_id']}/queue").json()["items"]
+
+    assert response.status_code == 200
+    assert queue[-1]["status"] == "cancelled"
+
+
 def test_delete_conversation_cascades_messages_queue_runs_and_events():
     client = TestClient(app)
     container = get_container()

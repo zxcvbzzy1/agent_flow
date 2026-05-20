@@ -46,6 +46,18 @@ async def get_run(
     return {"item": item}
 
 
+@router.post("/{run_id}/cancel")
+async def cancel_run(
+    run_id: str,
+    service: RunOrchestrationService = Depends(get_run_service),
+):
+    try:
+        item = service.cancel_run(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"item": item}
+
+
 @router.get("/{run_id}/events")
 async def stream_run_events(
     run_id: str,

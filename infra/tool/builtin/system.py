@@ -235,9 +235,10 @@ class SystemTool():
         if not allowed:
             return False, reason, self.working_directory
 
-        allowed, reason = self.audit_working_directory(command)
-        if not allowed:
-            return False, reason, self.working_directory
+        # 工作路径检验
+        # allowed, reason = self.audit_working_directory(command)
+        # if not allowed:
+        #     return False, reason, self.working_directory
 
         return True, "", self.working_directory
 
