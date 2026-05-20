@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from api.agents.schemas import AgentCreateRequest
 from api.core.dependencies import get_agent_service
@@ -29,3 +29,15 @@ async def create_agent(
     )
     return {"item": item}
 
+
+@router.delete("/{agent_id}")
+async def delete_agent(
+    agent_id: str,
+    service: AgentFactoryService = Depends(get_agent_service),
+):
+    try:
+        return {"item": service.delete_agent(agent_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

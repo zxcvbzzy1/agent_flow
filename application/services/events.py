@@ -27,6 +27,18 @@ class EventStreamService:
             queue.put_nowait(event)
         return event
 
+    def no_store_publish(self, run_id: str, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        event = {
+            "event_id": str(uuid.uuid4()),
+            "run_id": run_id,
+            "name": name,
+            "payload": payload,
+            "created_at": time.time(),
+        }
+        for queue in list(self._queues.get(run_id, [])):
+            queue.put_nowait(event)
+        return event
+
     def list_events(self, run_id: str) -> list[dict[str, Any]]:
         return self._store.find_many(
             "events",

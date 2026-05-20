@@ -99,6 +99,31 @@ class DocumentStore:
             return copy.deepcopy(doc)
         return None
 
+    def delete_one(self, collection: str, query: dict[str, Any]) -> int:
+        if self._db is not None:
+            result = self._db[collection].delete_one(query)
+            return int(result.deleted_count)
+
+        docs = self._memory.setdefault(collection, [])
+        for index, doc in enumerate(docs):
+            if self._matches(doc, query):
+                del docs[index]
+                return 1
+        return 0
+
+    def delete_many(self, collection: str, query: dict[str, Any]) -> int:
+        if self._db is not None:
+            result = self._db[collection].delete_many(query)
+            return int(result.deleted_count)
+
+        docs = self._memory.setdefault(collection, [])
+        before = len(docs)
+        self._memory[collection] = [
+            doc for doc in docs
+            if not self._matches(doc, query)
+        ]
+        return before - len(self._memory[collection])
+
     def clear(self) -> None:
         if self._db is not None:
             for name in self._db.list_collection_names():
@@ -114,4 +139,3 @@ class DocumentStore:
 
     def _matches(self, document: dict[str, Any], query: dict[str, Any]) -> bool:
         return all(document.get(key) == value for key, value in query.items())
-

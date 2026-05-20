@@ -25,6 +25,8 @@ class APIExecutorAgent(AgentBase):
 
 
 class AgentFactoryService:
+    PROTECTED_AGENT_IDS = {"default_planner", "default_executor"}
+
     def __init__(
         self,
         store: DocumentStore,
@@ -116,6 +118,37 @@ class AgentFactoryService:
                 raise KeyError(f"Agent 不存在: {agent_id}")
             self._agents[agent_id] = self._build_agent(record)
         return self._agents[agent_id]
+
+    def delete_agent(self, agent_id: str) -> dict[str, Any]:
+        if agent_id in self.PROTECTED_AGENT_IDS:
+            raise ValueError("默认 Agent 不允许删除")
+        record = self.get_agent_record(agent_id)
+        if record is None:
+            raise KeyError(f"Agent 不存在: {agent_id}")
+
+        planner_runs = self._store.find_many("runs", {"planner_agent_id": agent_id})
+        executor_runs = [
+            run for run in self._store.find_many("runs")
+            if agent_id in (run.get("executor_agent_ids") or [])
+        ]
+        run_ids = {
+            run.get("run_id")
+            for run in [*planner_runs, *executor_runs]
+            if run.get("run_id")
+        }
+
+        stats = {
+            "agents": self._store.delete_one("agents", {"agent_id": agent_id}),
+            "runs": 0,
+            "events": 0,
+        }
+        self._agents.pop(agent_id, None)
+
+        for run_id in run_ids:
+            stats["runs"] += self._store.delete_many("runs", {"run_id": run_id})
+            stats["events"] += self._store.delete_many("events", {"run_id": run_id})
+
+        return {"deleted": True, "agent_id": agent_id, "stats": stats}
 
     def _build_agent(self, record: dict[str, Any]) -> AgentBase | PlanAgent:
         context = self._contexts.get_engine(record["context_id"])

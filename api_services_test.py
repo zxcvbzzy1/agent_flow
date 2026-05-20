@@ -199,6 +199,100 @@ def test_context_agent_run_and_conversation_apis():
     assert queue[-1]["message_id"] == message["message_id"]
 
 
+def test_delete_conversation_cascades_messages_queue_runs_and_events():
+    client = TestClient(app)
+    container = get_container()
+
+    conversation = client.post(
+        "/api/conversations",
+        json={"title": "Delete Cascade"},
+    ).json()["item"]
+    message_item = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        json={"role": "user", "content": "delete me"},
+    ).json()["item"]
+    client.post(
+        f"/api/conversations/{conversation['conversation_id']}/queue",
+        json={"message_id": message_item["message_id"]},
+    )
+    run = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/runs",
+        json={
+            "planner_agent_id": "default_planner",
+            "executor_agent_ids": ["default_executor"],
+            "context_id": "default_step",
+            "max_replan_rounds": 1,
+        },
+    ).json()["item"]
+    container.events.publish(run["run_id"], "workflow.started", {"ok": True})
+
+    response = client.delete(f"/api/conversations/{conversation['conversation_id']}")
+
+    assert response.status_code == 200
+    assert response.json()["item"]["deleted"] is True
+    assert container.store.find_one("conversations", {"conversation_id": conversation["conversation_id"]}) is None
+    assert container.store.find_many("messages", {"conversation_id": conversation["conversation_id"]}) == []
+    assert container.store.find_many("message_queue", {"conversation_id": conversation["conversation_id"]}) == []
+    assert container.store.find_one("runs", {"run_id": run["run_id"]}) is None
+    assert container.events.list_events(run["run_id"]) == []
+
+
+def test_delete_uploaded_tool_and_protect_builtin_tool():
+    client = TestClient(app)
+    tool_name = f"delete_tool_{uuid.uuid4().hex[:8]}"
+    upload = client.post(
+        "/api/tools/upload",
+        json={
+            "name": tool_name,
+            "description": "delete test",
+            "field": "system",
+            "input_schema": {"type": "object", "properties": {}},
+            "metadata": {},
+            "source_code": "",
+        },
+    )
+
+    assert upload.status_code == 200
+    assert client.delete(f"/api/tools/{tool_name}").status_code == 200
+    tools = client.get("/api/tools").json()["items"]
+    assert all(item["name"] != tool_name for item in tools)
+    assert client.delete("/api/tools/bash").status_code == 400
+
+
+def test_delete_agent_cleans_runtime_and_related_runs():
+    client = TestClient(app)
+    container = get_container()
+    agent = client.post(
+        "/api/agents",
+        json={
+            "name": "Delete Agent",
+            "agent_type": "executor",
+            "context_id": "default_executor",
+        },
+    ).json()["item"]
+    run = client.post(
+        "/api/runs",
+        json={
+            "prompt": "delete agent run",
+            "planner_agent_id": "default_planner",
+            "executor_agent_ids": [agent["agent_id"]],
+            "context_id": "default_step",
+            "auto_start": False,
+        },
+    ).json()["item"]
+    container.events.publish(run["run_id"], "workflow.started", {"ok": True})
+
+    response = client.delete(f"/api/agents/{agent['agent_id']}")
+
+    assert response.status_code == 200
+    assert response.json()["item"]["deleted"] is True
+    assert container.store.find_one("agents", {"agent_id": agent["agent_id"]}) is None
+    assert agent["agent_id"] not in container.agents._agents
+    assert container.store.find_one("runs", {"run_id": run["run_id"]}) is None
+    assert container.events.list_events(run["run_id"]) == []
+    assert client.delete("/api/agents/default_executor").status_code == 400
+
+
 def test_event_stream_service_formats_historical_finished_event():
     container = get_container()
     run_id = "stream-test-run"

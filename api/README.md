@@ -32,27 +32,27 @@ database: agent_flow
 | `api/index.py` | 创建 FastAPI app，注册 CORS，挂载所有业务路由，提供 `/health`。 |
 | `api/core/config.py` | API 配置，包括 app 名称、MongoDB 地址、数据库名、CORS origins。 |
 | `api/core/dependencies.py` | 构建并缓存 `ServiceContainer`，统一注入应用服务。 |
-| `api/tools/router.py` | 工具注册与查询接口。 |
+| `api/tools/router.py` | 工具注册、查询与删除接口。 |
 | `api/tools/schemas.py` | 工具上传请求体。 |
 | `api/contexts/router.py` | 上下文配置创建与查询接口。 |
 | `api/contexts/schemas.py` | 上下文创建请求体。 |
-| `api/agents/router.py` | Agent 创建与查询接口。 |
+| `api/agents/router.py` | Agent 创建、查询与删除接口。 |
 | `api/agents/schemas.py` | Agent 创建请求体。 |
 | `api/runs/router.py` | Agent 编排 run 创建、查询、SSE 事件流接口。 |
 | `api/runs/schemas.py` | Run 创建请求体。 |
-| `api/conversations/router.py` | 会话、消息、对话队列、从会话创建 run 的接口。 |
+| `api/conversations/router.py` | 会话、消息、对话队列、从会话创建 run、删除会话的接口。 |
 | `api/conversations/schemas.py` | 会话、消息、队列请求体。 |
 
 对应应用层服务：
 
 | 服务 | 文件 | 职责 |
 |---|---|---|
-| `ToolRegistryService` | `application/services/tools.py` | 加载内置工具，上传工具声明和实现源码，注册工具事件。 |
+| `ToolRegistryService` | `application/services/tools.py` | 加载内置工具，上传工具声明和实现源码，注册工具事件，删除上传工具。 |
 | `ContextService` | `application/services/contexts.py` | 创建 `ContextEngine`，管理默认 executor/planner/step 上下文。 |
-| `AgentFactoryService` | `application/services/agents.py` | 创建 planner 或 executor agent。 |
+| `AgentFactoryService` | `application/services/agents.py` | 创建 planner 或 executor agent，删除非默认 Agent 并清理关联 run/event。 |
 | `RunOrchestrationService` | `application/services/runs.py` | 创建 run，后台执行 `PlanOrchestrator`，更新 run 和对话队列状态。 |
 | `EventStreamService` | `application/services/events.py` | 写入事件日志并提供 SSE 输出。 |
-| `ConversationService` | `application/services/conversations.py` | 创建会话、保存消息、维护 message queue。 |
+| `ConversationService` | `application/services/conversations.py` | 创建会话、保存消息、维护 message queue，删除会话及关联消息、队列、run/event。 |
 
 ## 基础接口
 
@@ -127,6 +127,25 @@ database: agent_flow
     "require_human_confirm": false
   },
   "source_code": ""
+}
+```
+
+### `DELETE /api/tools/{tool_id}`
+
+删除上传工具，并从运行时工具 registry 中移除。内置工具会被后端保护，返回 `400`。
+
+响应结构：
+
+```json
+{
+  "item": {
+    "deleted": true,
+    "tool_id": "unit_test_tool",
+    "stats": {
+      "tools": 1,
+      "source_deleted": true
+    }
+  }
 }
 ```
 
@@ -238,6 +257,26 @@ database: agent_flow
 
 - `default_planner`
 - `default_executor`
+
+### `DELETE /api/agents/{agent_id}`
+
+删除非默认 Agent，移除运行时实例，并清理该 Agent 关联的 runs 和 events。默认 Agent 会被后端保护，返回 `400`。
+
+响应结构：
+
+```json
+{
+  "item": {
+    "deleted": true,
+    "agent_id": "uuid",
+    "stats": {
+      "agents": 1,
+      "runs": 1,
+      "events": 3
+    }
+  }
+}
+```
 
 ## Run 编排接口
 
@@ -423,6 +462,28 @@ data: {"event_id":"...","run_id":"...","name":"workflow.started","payload":{}}
 ### `GET /api/conversations/{conversation_id}`
 
 查询单个会话。
+
+### `DELETE /api/conversations/{conversation_id}`
+
+删除会话，并级联删除该会话下的 messages、message_queue、runs，以及这些 run 对应的 events。
+
+响应结构：
+
+```json
+{
+  "item": {
+    "deleted": true,
+    "conversation_id": "uuid",
+    "stats": {
+      "conversations": 1,
+      "messages": 2,
+      "message_queue": 1,
+      "runs": 1,
+      "events": 5
+    }
+  }
+}
+```
 
 ### `GET /api/conversations/{conversation_id}/messages`
 

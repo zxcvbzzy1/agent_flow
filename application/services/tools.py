@@ -27,7 +27,45 @@ class ToolRegistryService:
         import infra.tool.tools_attach_methods  # noqa: F401
 
     def list_tools(self) -> list[dict[str, Any]]:
-        return [self._tool_to_dict(tool) for tool in Tool.get_all_tools()]
+        items = []
+        for tool in Tool.get_all_tools():
+            record = self._store.find_one("tools", {"tool_id": tool.name}) or {}
+            items.append({**self._tool_to_dict(tool), **record})
+        return items
+
+    def delete_tool(self, tool_id: str) -> dict[str, Any]:
+        record = self._store.find_one("tools", {"tool_id": tool_id})
+        if record is None:
+            record = self._store.find_one("tools", {"name": tool_id})
+        if record is None:
+            raise KeyError(f"工具不存在: {tool_id}")
+        if not record.get("uploaded"):
+            raise ValueError("内置工具不允许删除")
+
+        name = record.get("name") or record.get("tool_id") or tool_id
+        Tool._registry = [tool for tool in Tool._registry if tool.name != name]
+        Tool._registry_dict.pop(name, None)
+        if hasattr(factory, "_specs"):
+            factory._specs.pop(name, None)
+
+        source_deleted = False
+        source_path = record.get("source_path")
+        if source_path:
+            path = Path(source_path).expanduser().resolve()
+            upload_root = self._upload_dir.resolve()
+            try:
+                path.relative_to(upload_root)
+                if path.exists() and path.is_file():
+                    path.unlink()
+                    source_deleted = True
+            except ValueError:
+                source_deleted = False
+
+        stats = {
+            "tools": self._store.delete_many("tools", {"tool_id": record.get("tool_id", name)}),
+            "source_deleted": source_deleted,
+        }
+        return {"deleted": True, "tool_id": name, "stats": stats}
 
     def upload_tool(
         self,
@@ -116,4 +154,3 @@ class ToolRegistryService:
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
         importlib.invalidate_caches()
-
