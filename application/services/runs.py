@@ -138,11 +138,26 @@ class RunOrchestrationService:
         }
         self._store.insert_one("runs", record)
         if auto_start:
-            self._tasks[run_id] = asyncio.create_task(self._execute_run(record))
+            task = asyncio.create_task(self._execute_run(record))
+            self._tasks[run_id] = task
+            task.add_done_callback(lambda _task, rid=run_id: self._tasks.pop(rid, None))
         return record
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         return self._store.find_one("runs", {"run_id": run_id})
+
+    def cancel_run(self, run_id: str, reason: str = "用户中断") -> dict[str, Any]:
+        record = self.get_run(run_id)
+        if record is None:
+            raise KeyError(f"Run 不存在: {run_id}")
+        if record.get("status") in {"finished", "failed", "cancelled"}:
+            return record
+
+        task = self._tasks.get(run_id)
+        if task is not None and not task.done():
+            task.cancel()
+
+        return self._mark_run_cancelled(record, reason=reason, publish=True)
 
     async def _execute_run(self, record: dict[str, Any]) -> None:
         run_id = record["run_id"]
@@ -196,6 +211,11 @@ class RunOrchestrationService:
                 status="done",
                 final=orchestrator.state.final,
             )
+        except asyncio.CancelledError:
+            current = self.get_run(run_id) or record
+            if current.get("status") != "cancelled":
+                self._mark_run_cancelled(record, reason="用户中断", publish=True)
+            raise
         except Exception as exc:
             self._store.update_one(
                 "runs",
@@ -208,6 +228,27 @@ class RunOrchestrationService:
             self._frontend_bridge.unregister_agent_run(record.get("planner_agent_id", ""), run_id)
             for executor_id in record.get("executor_agent_ids", []):
                 self._frontend_bridge.unregister_agent_run(executor_id, run_id)
+            self._tasks.pop(run_id, None)
+
+    def _mark_run_cancelled(self, record: dict[str, Any], reason: str, publish: bool) -> dict[str, Any]:
+        run_id = record["run_id"]
+        item = self._store.update_one(
+            "runs",
+            {"run_id": run_id},
+            {
+                "status": "cancelled",
+                "cancel_reason": reason,
+                "finished_at": time.time(),
+            },
+        ) or self.get_run(run_id) or record
+        self._complete_conversation_queue(record=record, status="cancelled", final=reason)
+        if publish:
+            self._streams.publish(
+                run_id,
+                "workflow.failed",
+                {"run_id": run_id, "error": reason, "cancelled": True},
+            )
+        return item
 
     def _complete_conversation_queue(self, record: dict[str, Any], status: str, final: str) -> None:
         conversation_id = record.get("conversation_id")
