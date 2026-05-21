@@ -11,17 +11,19 @@ class DefaultShortTermMemory(ShortTermMemory):
     _store       : {tool_name: [raw_str, ...]}   原始输出列表，按调用顺序追加
     """
 
-    def __init__(self,fields:memory_field) -> None:
+    def __init__(self,fields:list[memory_field]) -> None:
         super().__init__(fields)
-        self._store:       dict[str, list[str]] = {}
+        self._store:       dict[str, dict[str, list[str]]] = {}
 
 
     # ── 写 ────────────────────────────────────────────────────────
 
-    def store(self,field, key: str, raw: str) -> None:
+    def store(self,field, key: str, raw: str) -> int:
         if not isinstance(raw, str):
             raw = json.dumps(raw, ensure_ascii=False)
-        self._store.setdefault(field, {}).setdefault(key, []).append(raw)
+        values = self._store.setdefault(field, {}).setdefault(key, [])
+        values.append(raw)
+        return len(values)
 
     # ── 读 ────────────────────────────────────────────────────────
 
@@ -57,3 +59,6 @@ class DefaultShortTermMemory(ShortTermMemory):
 
     def clear(self) -> None:
         self._store.clear()
+
+    def clear_field(self, field: memory_field) -> None:
+        self._store.pop(field, None)

@@ -7,7 +7,6 @@ ToolField = Literal[
     "search",      # 查询
     "memory",  # 记忆
     "human",       # 人机协作
-    "summary",  # 总结
     "write_agent"   # 代理特有工具
 ]
 

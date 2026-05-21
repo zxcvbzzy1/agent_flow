@@ -46,7 +46,7 @@ class ItemStrategy(ContextStrategy, ABC):
     def apply(self, memory: ShortTermMemory, field: memory_field, state: dict) -> list[ContextItem]:
         # 单独使用时从 memory 拿指定 field 的原文再变换
         items = [
-            ContextItem(source=f"{key}#{i+1}", content=raw, metadata={"field": field, "tool_name": key})
+            ContextItem(source=f"{key}#{i+1}", content=raw, metadata={"field": field, "name": key})
             for key in memory.keys_by_field(field)
             for i, raw in enumerate(
                 [memory.get(field, key, j+1) for j in range(memory.count(field, key))]
@@ -91,7 +91,7 @@ class StrategyPipeline(ContextStrategy):
 # ── 内置策略 ─────────────────────────────────────────────────────
 
 class FullHistoryStrategy(ContextStrategy):
-    """透传所有工具输出原文，不做任何处理。"""
+    """透传所有输出原文，不做任何处理。"""
 
     def apply(self, memory: ShortTermMemory, field: memory_field, state: dict) -> list[ContextItem]:
         items: list[ContextItem] = []
@@ -103,13 +103,13 @@ class FullHistoryStrategy(ContextStrategy):
                     items.append(ContextItem(
                         source=f"{key}#{i+1}",
                         content=raw,
-                        metadata={"field": field, "tool_name": key, "call_index": i + 1},
+                        metadata={"field": field, "name": key, "call_index": i + 1},
                     ))
         return items
 
 
 class LatestOnlyStrategy(ContextStrategy):
-    """每个工具只取最新一次输出。"""
+    """只取最新一次输出。"""
 
     def apply(self, memory: ShortTermMemory, field: memory_field, state: dict) -> list[ContextItem]:
         items: list[ContextItem] = []
@@ -119,7 +119,7 @@ class LatestOnlyStrategy(ContextStrategy):
                 items.append(ContextItem(
                     source=f"{key}#latest",
                     content=raw,
-                    metadata={"field": field, "tool_name": key},
+                    metadata={"field": field, "name": key},
                 ))
         return items
 
@@ -188,12 +188,12 @@ class SummarizeStrategy(ItemStrategy):
 class FilterByToolStrategy(ItemStrategy):
     """只保留指定工具名的 item。"""
 
-    def __init__(self, tool_names: list[str]) -> None:
-        self._names = set(tool_names)
+    def __init__(self, names: list[str]) -> None:
+        self._names = set(names)
 
     def transform(self, items: list[ContextItem], state: dict) -> list[ContextItem]:
         return [
             i for i in items
-            if i.metadata.get("tool_name") in self._names
+            if i.metadata.get("name") in self._names
         ]
 
