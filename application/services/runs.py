@@ -111,6 +111,8 @@ class RunOrchestrationService:
     def create_run(
         self,
         prompt: str,
+        mode: str = "plan",
+        executor_agent_id: str | None = None,
         planner_agent_id: str = "default_planner",
         executor_agent_ids: list[str] | None = None,
         context_id: str = "default_step",
@@ -120,24 +122,31 @@ class RunOrchestrationService:
         auto_start: bool = True,
     ) -> dict[str, Any]:
         run_id = str(uuid.uuid4())
+        if mode not in {"react", "plan"}:
+            raise ValueError("mode 必须是 react 或 plan")
+
         executor_agent_ids = executor_agent_ids or []
-        if not executor_agent_ids:
-            raise ValueError("executor_agent_ids 不能为空")
-        planner_record = self._agents.get_agent_record(planner_agent_id)
-        if planner_record is None:
-            raise KeyError(f"Planner Agent 不存在: {planner_agent_id}")
-        if planner_record.get("agent_type") != "planner":
-            raise ValueError("planner_agent_id 必须指向 planner agent")
-        for executor_id in executor_agent_ids:
-            executor_record = self._agents.get_agent_record(executor_id)
-            if executor_record is None:
-                raise KeyError(f"Executor Agent 不存在: {executor_id}")
-            if executor_record.get("agent_type") != "executor":
-                raise ValueError(f"executor_agent_id 必须指向 executor agent: {executor_id}")
-        self._contexts.get_engine(context_id)
+        if mode == "react":
+            executor_agent_id = executor_agent_id or (executor_agent_ids[0] if executor_agent_ids else None)
+            if not executor_agent_id:
+                raise ValueError("react mode 需要 executor_agent_id")
+            self._validate_executor(executor_agent_id)
+            executor_agent_ids = [executor_agent_id]
+            planner_agent_id = ""
+            context_id = ""
+        else:
+            if not executor_agent_ids:
+                raise ValueError("executor_agent_ids 不能为空")
+            self._validate_planner(planner_agent_id)
+            for executor_id in executor_agent_ids:
+                self._validate_executor(executor_id)
+            self._contexts.get_engine(context_id)
+
         record = {
             "run_id": run_id,
+            "mode": mode,
             "prompt": prompt,
+            "executor_agent_id": executor_agent_id,
             "planner_agent_id": planner_agent_id,
             "executor_agent_ids": executor_agent_ids,
             "context_id": context_id,
@@ -156,6 +165,20 @@ class RunOrchestrationService:
             self._tasks[run_id] = task
             task.add_done_callback(lambda _task, rid=run_id: self._tasks.pop(rid, None))
         return record
+
+    def _validate_planner(self, planner_agent_id: str) -> None:
+        planner_record = self._agents.get_agent_record(planner_agent_id)
+        if planner_record is None:
+            raise KeyError(f"Planner Agent 不存在: {planner_agent_id}")
+        if planner_record.get("agent_type") != "planner":
+            raise ValueError("planner_agent_id 必须指向 planner agent")
+
+    def _validate_executor(self, executor_agent_id: str) -> None:
+        executor_record = self._agents.get_agent_record(executor_agent_id)
+        if executor_record is None:
+            raise KeyError(f"Executor Agent 不存在: {executor_agent_id}")
+        if executor_record.get("agent_type") != "executor":
+            raise ValueError(f"executor_agent_id 必须指向 executor agent: {executor_agent_id}")
 
     def list_runs(self) -> list[dict[str, Any]]:
         return self._store.find_many("runs", sort=[("created_at", -1)])
@@ -184,50 +207,10 @@ class RunOrchestrationService:
             {"status": "running", "started_at": time.time()},
         )
         try:
-            planner = self._agents.get_agent(record["planner_agent_id"])
-            if not isinstance(planner, PlanAgent):
-                raise TypeError("planner_agent_id 必须指向 planner agent")
-            self._frontend_bridge.register_agent_run(planner.id, run_id)
-
-            executors: dict[str, AgentBase] = {}
-            for executor_id in record["executor_agent_ids"]:
-                executor = self._agents.get_agent(executor_id)
-                if not isinstance(executor, AgentBase):
-                    raise TypeError(f"executor_agent_id 不是执行型 agent: {executor_id}")
-                self._frontend_bridge.register_agent_run(executor.id, run_id)
-                executors[executor_id] = executor
-
-            step_context = self._contexts.get_engine(record["context_id"])
-            if not isinstance(step_context, ContextEngine):
-                raise TypeError("context_id 必须指向可用上下文")
-
-            orchestrator = ObservablePlanOrchestrator(
-                planner=planner,
-                executors=executors,
-                step_context_engine=step_context,
-                event_bus=RecordingEventBus(run_id, self._streams),
-                state=OrchestratorState(),
-                max_replan_rounds=record["max_replan_rounds"],
-                run_id=run_id,
-                streams=self._streams,
-            )
-            await orchestrator.start(record["prompt"])
-            self._store.update_one(
-                "runs",
-                {"run_id": run_id},
-                {
-                    "status": "finished",
-                    "plan": orchestrator.state.plan,
-                    "final": orchestrator.state.final,
-                    "finish_reason": orchestrator.state.finish_reason,
-                    "finished_at": time.time(),
-                },
-            )
-            self._complete_conversation_queue(
-                record=record,
-                status="done",
-                final=orchestrator.state.final,
-            )
+            if record.get("mode") == "react":
+                await self._execute_react_run(record)
+            else:
+                await self._execute_plan_run(record)
         except asyncio.CancelledError:
             current = self.get_run(run_id) or record
             if current.get("status") != "cancelled":
@@ -239,13 +222,125 @@ class RunOrchestrationService:
                 {"run_id": run_id},
                 {"status": "failed", "error": str(exc), "finished_at": time.time()},
             )
-            self._complete_conversation_queue(record=record, status="failed", final=str(exc))
             self._streams.publish(run_id, "workflow.failed", {"error": str(exc)})
         finally:
             self._frontend_bridge.unregister_agent_run(record.get("planner_agent_id", ""), run_id)
             for executor_id in record.get("executor_agent_ids", []):
                 self._frontend_bridge.unregister_agent_run(executor_id, run_id)
             self._tasks.pop(run_id, None)
+
+    async def _execute_react_run(self, record: dict[str, Any]) -> None:
+        run_id = record["run_id"]
+        executor_id = record["executor_agent_id"]
+        executor = self._agents.get_agent(executor_id)
+        if not isinstance(executor, AgentBase):
+            raise TypeError(f"executor_agent_id 不是执行型 agent: {executor_id}")
+
+        self._frontend_bridge.register_agent_run(executor.id, run_id)
+        self._load_conversation_history(executor, record)
+        self._streams.publish(
+            run_id,
+            "workflow.started",
+            {"run_id": run_id, "mode": "react", "prompt": record["prompt"], "executor_id": executor_id},
+        )
+        await executor.start_with_history(record["prompt"])
+        final = executor.states.get("final", "")
+        finish_reason = executor.states.get("finish_reason", "React Agent 执行完成")
+        self._store.update_one(
+            "runs",
+            {"run_id": run_id},
+            {
+                "status": "finished",
+                "final": final,
+                "finish_reason": finish_reason,
+                "finished_at": time.time(),
+            },
+        )
+        self._write_conversation_assistant_message(record=record, final=final)
+        self._streams.publish(
+            run_id,
+            "workflow.finished",
+            {"run_id": run_id, "mode": "react", "final": final, "finish_reason": finish_reason},
+        )
+
+    async def _execute_plan_run(self, record: dict[str, Any]) -> None:
+        run_id = record["run_id"]
+        planner = self._agents.get_agent(record["planner_agent_id"])
+        if not isinstance(planner, PlanAgent):
+            raise TypeError("planner_agent_id 必须指向 planner agent")
+        self._frontend_bridge.register_agent_run(planner.id, run_id)
+        self._load_conversation_history(planner, record)
+
+        executors: dict[str, AgentBase] = {}
+        for executor_id in record["executor_agent_ids"]:
+            executor = self._agents.get_agent(executor_id)
+            if not isinstance(executor, AgentBase):
+                raise TypeError(f"executor_agent_id 不是执行型 agent: {executor_id}")
+            self._frontend_bridge.register_agent_run(executor.id, run_id)
+            executors[executor_id] = executor
+
+        step_context = self._contexts.get_engine(record["context_id"])
+        if not isinstance(step_context, ContextEngine):
+            raise TypeError("context_id 必须指向可用上下文")
+
+        orchestrator = ObservablePlanOrchestrator(
+            planner=planner,
+            executors=executors,
+            step_context_engine=step_context,
+            event_bus=RecordingEventBus(run_id, self._streams),
+            state=OrchestratorState(),
+            max_replan_rounds=record["max_replan_rounds"],
+            run_id=run_id,
+            streams=self._streams,
+        )
+        await orchestrator.start(record["prompt"])
+        self._store.update_one(
+            "runs",
+            {"run_id": run_id},
+            {
+                "status": "finished",
+                "plan": orchestrator.state.plan,
+                "final": orchestrator.state.final,
+                "finish_reason": orchestrator.state.finish_reason,
+                "finished_at": time.time(),
+            },
+        )
+        self._write_conversation_assistant_message(record=record, final=orchestrator.state.final)
+
+    def _load_conversation_history(self, agent: AgentBase, record: dict[str, Any]) -> None:
+        conversation_id = record.get("conversation_id")
+        message_id = record.get("message_id")
+        if not conversation_id or not message_id:
+            return
+
+        memory = agent.context_engine.get_memory()
+        memory.clear_field("agent_history")
+        history = self._conversation_history_before(record)
+        for message in history:
+            memory.store("agent_history", "dialogue", self._format_history_message(message))
+
+    def _conversation_history_before(self, record: dict[str, Any]) -> list[dict[str, Any]]:
+        conversation_id = record.get("conversation_id")
+        message_id = record.get("message_id")
+        if not conversation_id or not message_id:
+            return []
+
+        messages = self._store.find_many(
+            "messages",
+            {"conversation_id": conversation_id},
+            sort=[("created_at", 1)],
+        )
+        history: list[dict[str, Any]] = []
+        for message in messages:
+            if message.get("message_id") == message_id:
+                break
+            if message.get("role") in {"user", "assistant"}:
+                history.append(message)
+        return history
+
+    def _format_history_message(self, message: dict[str, Any]) -> str:
+        role = "用户" if message.get("role") == "user" else "Agent"
+        return f"### 历史消息\n{role}：{message.get('content', '')}"
 
     def _mark_run_cancelled(self, record: dict[str, Any], reason: str, publish: bool) -> dict[str, Any]:
         run_id = record["run_id"]
@@ -258,7 +353,6 @@ class RunOrchestrationService:
                 "finished_at": time.time(),
             },
         ) or self.get_run(run_id) or record
-        self._complete_conversation_queue(record=record, status="cancelled", final=reason)
         if publish:
             self._streams.publish(
                 run_id,
@@ -267,39 +361,19 @@ class RunOrchestrationService:
             )
         return item
 
-    def _complete_conversation_queue(self, record: dict[str, Any], status: str, final: str) -> None:
+    def _write_conversation_assistant_message(self, record: dict[str, Any], final: str) -> None:
         conversation_id = record.get("conversation_id")
-        message_id = record.get("message_id")
-        if not conversation_id or not message_id:
+        if not conversation_id or not final:
             return
 
-        queue_items = self._store.find_many(
-            "message_queue",
-            {"conversation_id": conversation_id},
-            sort=[("created_at", 1)],
+        self._store.insert_one(
+            "messages",
+            {
+                "message_id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "role": "assistant",
+                "content": final,
+                "metadata": {"source": "run"},
+                "run_id": record["run_id"],
+            },
         )
-        for item in reversed(queue_items):
-            if item.get("message_id") == message_id:
-                self._store.update_one(
-                    "message_queue",
-                    {"queue_id": item["queue_id"]},
-                    {
-                        "status": status,
-                        "run_id": record["run_id"],
-                        "processed_at": time.time(),
-                    },
-                )
-                break
-
-        if status == "done" and final:
-            self._store.insert_one(
-                "messages",
-                {
-                    "message_id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "role": "assistant",
-                    "content": final,
-                    "metadata": {"source": "run"},
-                    "run_id": record["run_id"],
-                },
-            )

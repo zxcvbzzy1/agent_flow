@@ -25,6 +25,7 @@ from infra.db.mongodb import DocumentStore
 
 class ContextService:
     DEFAULT_FIELDS = ["system", "search", "memory", "write_agent", "human"]
+    PROTECTED_CONTEXT_IDS = {"default_executor", "default_planner", "default_step"}
 
     def __init__(self, store: DocumentStore) -> None:
         self._store = store
@@ -149,6 +150,28 @@ class ContextService:
                 raise KeyError(f"上下文不存在: {context_id}")
             self._engines[context_id] = self._build_engine(record)
         return self._engines[context_id]
+
+    def delete_context(self, context_id: str) -> dict[str, Any]:
+        if context_id in self.PROTECTED_CONTEXT_IDS:
+            raise ValueError("默认 ContextEngine 不允许删除")
+
+        record = self._store.find_one("contexts", {"context_id": context_id})
+        if record is None:
+            raise KeyError(f"上下文不存在: {context_id}")
+
+        agent_ref = self._store.find_one("agents", {"context_id": context_id})
+        if agent_ref is not None:
+            raise ValueError(f"ContextEngine 已被 Agent 引用: {agent_ref.get('agent_id', '')}")
+
+        run_ref = self._store.find_one("runs", {"context_id": context_id})
+        if run_ref is not None:
+            raise ValueError(f"ContextEngine 已被 Run 引用: {run_ref.get('run_id', '')}")
+
+        stats = {
+            "contexts": self._store.delete_one("contexts", {"context_id": context_id}),
+        }
+        self._engines.pop(context_id, None)
+        return {"deleted": True, "context_id": context_id, "stats": stats}
 
     def _build_engine(self, record: dict[str, Any]) -> ContextEngine:
         memory = DefaultShortTermMemory(["tool_respond", "agent_history"])

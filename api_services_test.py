@@ -11,6 +11,7 @@ from api.core.dependencies import get_container
 from api.index import app
 from domain.agent_base import AgentBase, ToolCall
 from domain.event import Event
+from domain.state import Plan
 from domain.runtime_hooks import (
     get_human_approval_provider,
     get_run_context_provider,
@@ -246,14 +247,26 @@ def test_context_agent_run_and_conversation_apis():
         f"/api/conversations/{conversation['conversation_id']}/messages",
         json={"role": "user", "content": "你好"},
     ).json()["item"]
-    queue_item = client.post(
-        f"/api/conversations/{conversation['conversation_id']}/queue",
-        json={"message_id": message["message_id"]},
+    conversation_run = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/runs",
+        json={
+            "mode": "plan",
+            "message_id": message["message_id"],
+            "planner_agent_id": "default_planner",
+            "executor_agent_ids": ["default_executor"],
+            "context_id": "default_step",
+            "auto_start": False,
+        },
     ).json()["item"]
+    updated_message = client.get(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+    ).json()["items"][-1]
 
-    assert queue_item["status"] == "pending"
-    queue = client.get(f"/api/conversations/{conversation['conversation_id']}/queue").json()["items"]
-    assert queue[-1]["message_id"] == message["message_id"]
+    assert conversation_run["conversation_id"] == conversation["conversation_id"]
+    assert conversation_run["message_id"] == message["message_id"]
+    assert updated_message["run_id"] == conversation_run["run_id"]
+    assert client.post(f"/api/conversations/{conversation['conversation_id']}/queue").status_code == 404
+    assert client.get(f"/api/conversations/{conversation['conversation_id']}/queue").status_code == 404
 
 
 def test_cancel_pending_run_marks_cancelled_and_publishes_workflow_failed():
@@ -327,42 +340,194 @@ def test_runs_list_and_create_validation():
     assert any(item["run_id"] == run["run_id"] for item in listed.json()["items"])
 
 
-def test_cancel_run_updates_related_conversation_queue():
+@pytest.mark.asyncio
+async def test_react_run_uses_start_with_history_and_writes_assistant_message():
+    container = get_container()
+    conversation = container.conversations.create_conversation("React Chat")
+    container.conversations.add_message(
+        conversation_id=conversation["conversation_id"],
+        role="user",
+        content="previous user",
+    )
+    container.conversations.add_message(
+        conversation_id=conversation["conversation_id"],
+        role="assistant",
+        content="previous assistant",
+    )
+    user_message = container.conversations.add_message(
+        conversation_id=conversation["conversation_id"],
+        role="user",
+        content="react hello",
+    )
+    executor = container.agents.get_agent("default_executor")
+    original_start_with_history = executor.start_with_history
+    called_prompts = []
+
+    async def fake_start_with_history(prompt: str) -> None:
+        called_prompts.append(prompt)
+        executor.states["prompt"] = prompt
+        executor.states["final"] = "react final"
+        executor.states["finish_reason"] = "react done"
+        executor.states["is_finished"] = True
+
+    executor.start_with_history = fake_start_with_history
+    try:
+        run = container.runs.create_run(
+            prompt=user_message["content"],
+            mode="react",
+            executor_agent_id="default_executor",
+            conversation_id=conversation["conversation_id"],
+            message_id=user_message["message_id"],
+            auto_start=True,
+        )
+        await asyncio.sleep(0.05)
+    finally:
+        executor.start_with_history = original_start_with_history
+
+    stored = container.runs.get_run(run["run_id"])
+    messages = container.conversations.list_messages(conversation["conversation_id"])
+    memory = executor.context_engine.get_memory()
+    history = "\n".join(
+        memory.get("agent_history", "dialogue", index + 1)
+        for index in range(memory.count("agent_history", "dialogue"))
+    )
+
+    assert called_prompts == ["react hello"]
+    assert "previous user" in history
+    assert "previous assistant" in history
+    assert "react hello" not in history
+    assert stored["status"] == "finished"
+    assert stored["final"] == "react final"
+    assert messages[-1]["role"] == "assistant"
+    assert messages[-1]["content"] == "react final"
+    assert messages[-1]["run_id"] == run["run_id"]
+
+
+@pytest.mark.asyncio
+async def test_conversation_history_is_isolated_between_react_runs():
+    container = get_container()
+    first = container.conversations.create_conversation("First Chat")
+    container.conversations.add_message(first["conversation_id"], "user", "first previous")
+    container.conversations.add_message(first["conversation_id"], "assistant", "first assistant")
+
+    second = container.conversations.create_conversation("Second Chat")
+    container.conversations.add_message(second["conversation_id"], "user", "second previous")
+    current = container.conversations.add_message(second["conversation_id"], "user", "second current")
+
+    executor = container.agents.get_agent("default_executor")
+    original_start_with_history = executor.start_with_history
+
+    async def fake_start_with_history(prompt: str) -> None:
+        executor.states["final"] = "isolated final"
+        executor.states["finish_reason"] = "done"
+        executor.states["is_finished"] = True
+
+    executor.start_with_history = fake_start_with_history
+    try:
+        container.runs.create_run(
+            prompt=current["content"],
+            mode="react",
+            executor_agent_id="default_executor",
+            conversation_id=second["conversation_id"],
+            message_id=current["message_id"],
+            auto_start=True,
+        )
+        await asyncio.sleep(0.05)
+    finally:
+        executor.start_with_history = original_start_with_history
+
+    memory = executor.context_engine.get_memory()
+    history = "\n".join(
+        memory.get("agent_history", "dialogue", index + 1)
+        for index in range(memory.count("agent_history", "dialogue"))
+    )
+
+    assert "second previous" in history
+    assert "first previous" not in history
+    assert "first assistant" not in history
+    assert "second current" not in history
+
+
+@pytest.mark.asyncio
+async def test_plan_run_loads_conversation_history_into_planner_memory():
+    container = get_container()
+    conversation = container.conversations.create_conversation("Plan Chat")
+    container.conversations.add_message(conversation["conversation_id"], "user", "plan previous")
+    container.conversations.add_message(conversation["conversation_id"], "assistant", "plan assistant")
+    current = container.conversations.add_message(conversation["conversation_id"], "user", "plan current")
+
+    planner = container.agents.get_agent("default_planner")
+    original_generate_plan = planner.generate_plan
+    original_summarize_result = planner.summarize_result
+    observed_history = []
+
+    async def fake_generate_plan(state, executor_ids):
+        memory = planner.context_engine.get_memory()
+        observed_history.append("\n".join(
+            memory.get("agent_history", "dialogue", index + 1)
+            for index in range(memory.count("agent_history", "dialogue"))
+        ))
+        return Plan()
+
+    async def fake_summarize_result(state):
+        return "plan final"
+
+    planner.generate_plan = fake_generate_plan
+    planner.summarize_result = fake_summarize_result
+    try:
+        container.runs.create_run(
+            prompt=current["content"],
+            mode="plan",
+            planner_agent_id="default_planner",
+            executor_agent_ids=["default_executor"],
+            context_id="default_step",
+            conversation_id=conversation["conversation_id"],
+            message_id=current["message_id"],
+            auto_start=True,
+        )
+        await asyncio.sleep(0.05)
+    finally:
+        planner.generate_plan = original_generate_plan
+        planner.summarize_result = original_summarize_result
+
+    assert observed_history
+    assert "plan previous" in observed_history[0]
+    assert "plan assistant" in observed_history[0]
+    assert "plan current" not in observed_history[0]
+
+
+def test_cancel_run_does_not_write_assistant_message():
     client = TestClient(app)
 
     conversation = client.post(
         "/api/conversations",
-        json={"title": "Cancel Queue"},
+        json={"title": "Cancel Run"},
     ).json()["item"]
     message = client.post(
         f"/api/conversations/{conversation['conversation_id']}/messages",
-        json={"role": "user", "content": "cancel queued run"},
+        json={"role": "user", "content": "cancel direct run"},
     ).json()["item"]
-    client.post(
-        f"/api/conversations/{conversation['conversation_id']}/queue",
-        json={"message_id": message["message_id"]},
-    )
     run = client.post(
-        "/api/runs",
+        f"/api/conversations/{conversation['conversation_id']}/runs",
         json={
-            "prompt": message["content"],
+            "mode": "plan",
+            "message_id": message["message_id"],
             "planner_agent_id": "default_planner",
             "executor_agent_ids": ["default_executor"],
             "context_id": "default_step",
-            "conversation_id": conversation["conversation_id"],
-            "message_id": message["message_id"],
             "auto_start": False,
         },
     ).json()["item"]
 
     response = client.post(f"/api/runs/{run['run_id']}/cancel")
-    queue = client.get(f"/api/conversations/{conversation['conversation_id']}/queue").json()["items"]
+    messages = client.get(f"/api/conversations/{conversation['conversation_id']}/messages").json()["items"]
 
     assert response.status_code == 200
-    assert queue[-1]["status"] == "cancelled"
+    assert response.json()["item"]["status"] == "cancelled"
+    assert all(item["role"] != "assistant" for item in messages)
 
 
-def test_delete_conversation_cascades_messages_queue_runs_and_events():
+def test_delete_conversation_cascades_messages_runs_and_events():
     client = TestClient(app)
     container = get_container()
 
@@ -374,13 +539,11 @@ def test_delete_conversation_cascades_messages_queue_runs_and_events():
         f"/api/conversations/{conversation['conversation_id']}/messages",
         json={"role": "user", "content": "delete me"},
     ).json()["item"]
-    client.post(
-        f"/api/conversations/{conversation['conversation_id']}/queue",
-        json={"message_id": message_item["message_id"]},
-    )
     run = client.post(
         f"/api/conversations/{conversation['conversation_id']}/runs",
         json={
+            "mode": "plan",
+            "message_id": message_item["message_id"],
             "planner_agent_id": "default_planner",
             "executor_agent_ids": ["default_executor"],
             "context_id": "default_step",
@@ -395,7 +558,6 @@ def test_delete_conversation_cascades_messages_queue_runs_and_events():
     assert response.json()["item"]["deleted"] is True
     assert container.store.find_one("conversations", {"conversation_id": conversation["conversation_id"]}) is None
     assert container.store.find_many("messages", {"conversation_id": conversation["conversation_id"]}) == []
-    assert container.store.find_many("message_queue", {"conversation_id": conversation["conversation_id"]}) == []
     assert container.store.find_one("runs", {"run_id": run["run_id"]}) is None
     assert container.events.list_events(run["run_id"]) == []
 
