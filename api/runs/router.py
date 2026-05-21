@@ -17,21 +17,31 @@ from application.services.runs import RunOrchestrationService
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
 
+@router.get("")
+async def list_runs(service: RunOrchestrationService = Depends(get_run_service)):
+    return {"items": service.list_runs()}
+
+
 @router.post("")
 async def create_run(
     request: RunCreateRequest,
     service: RunOrchestrationService = Depends(get_run_service),
 ):
-    item = service.create_run(
-        prompt=request.prompt,
-        planner_agent_id=request.planner_agent_id,
-        executor_agent_ids=request.executor_agent_ids,
-        context_id=request.context_id,
-        max_replan_rounds=request.max_replan_rounds,
-        conversation_id=request.conversation_id,
-        message_id=request.message_id,
-        auto_start=request.auto_start,
-    )
+    try:
+        item = service.create_run(
+            prompt=request.prompt,
+            planner_agent_id=request.planner_agent_id,
+            executor_agent_ids=request.executor_agent_ids,
+            context_id=request.context_id,
+            max_replan_rounds=request.max_replan_rounds,
+            conversation_id=request.conversation_id,
+            message_id=request.message_id,
+            auto_start=request.auto_start,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"item": item}
 
 

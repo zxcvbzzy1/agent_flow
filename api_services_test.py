@@ -284,6 +284,49 @@ def test_cancel_pending_run_marks_cancelled_and_publishes_workflow_failed():
     assert client.post("/api/runs/not-found/cancel").status_code == 404
 
 
+def test_runs_list_and_create_validation():
+    client = TestClient(app)
+
+    empty_executors = client.post(
+        "/api/runs",
+        json={
+            "prompt": "missing executor",
+            "planner_agent_id": "default_planner",
+            "executor_agent_ids": [],
+            "context_id": "default_step",
+            "auto_start": False,
+        },
+    )
+    assert empty_executors.status_code == 400
+
+    missing_context = client.post(
+        "/api/runs",
+        json={
+            "prompt": "missing context",
+            "planner_agent_id": "default_planner",
+            "executor_agent_ids": ["default_executor"],
+            "context_id": "missing_step_context",
+            "auto_start": False,
+        },
+    )
+    assert missing_context.status_code == 404
+
+    run = client.post(
+        "/api/runs",
+        json={
+            "prompt": "list visible run",
+            "planner_agent_id": "default_planner",
+            "executor_agent_ids": ["default_executor"],
+            "context_id": "default_step",
+            "auto_start": False,
+        },
+    ).json()["item"]
+    listed = client.get("/api/runs")
+
+    assert listed.status_code == 200
+    assert any(item["run_id"] == run["run_id"] for item in listed.json()["items"])
+
+
 def test_cancel_run_updates_related_conversation_queue():
     client = TestClient(app)
 

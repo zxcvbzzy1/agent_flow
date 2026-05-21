@@ -92,6 +92,9 @@ class AgentFactoryService:
         agent_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if agent_type not in {"planner", "executor"}:
+            raise ValueError("agent_type 必须是 planner 或 executor")
+        self._contexts.get_engine(context_id)
         agent_id = agent_id or str(uuid.uuid4())
         record = {
             "agent_id": agent_id,
