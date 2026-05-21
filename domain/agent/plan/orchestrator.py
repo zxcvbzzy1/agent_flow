@@ -155,11 +155,11 @@ class PlanOrchestrator:
         action_type = action.get("event_dispatch")
         playload = action.get("playload", {})
         
-
         if action_type == "workflow.started":
             self.state.prompt = playload.get("prompt", "")
             self.state.executors = self._executor_status()
             self.state.current_step = None
+            self.planner.prepare_start(self.state.prompt, keep_history=True)
             return
 
         if action_type in {"plan.generated", "wave.completed", "plan.replanned"}:
@@ -175,6 +175,10 @@ class PlanOrchestrator:
             self.state.is_finished = True
             self.state.finish_reason = playload.get("finish_reason", "")
             self.state.current_step = None
+            self.planner.store_dialogue_history(
+                self.state.prompt,
+                self.state.final,
+            )
 
     def _executor_status(self) -> dict[str, dict]:
         status = {}

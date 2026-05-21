@@ -21,10 +21,6 @@ class PlanAgent(AgentBase):
     ) -> None:
         super().__init__(id, name, llm, context)
 
-    async def start(self, prompt: str) -> None:
-        self.states["prompt"] = prompt
-        await self.run()
-
     async def generate_plan(self, state: dict, executor_ids: list[str]) -> Plan:
         context = self.context_engine.build(state)
         messages = [
