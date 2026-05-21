@@ -31,6 +31,7 @@ llm_client = LLM_Client(
 # 个性化设置
 # 记忆
 memory = DefaultShortTermMemory(["tool_respond", "agent_history"])
+memory2 = DefaultShortTermMemory(["tool_respond", "agent_history"])
 
 # ReACT执行者上下文提供类
 providers = [
@@ -47,8 +48,8 @@ plan_providers = [
     StateProvider(),
     ExecutorStatusProvider(),
     PlanObservationProvider(),
-    HistoryProvider(memory, "agent_history", FullHistoryStrategy()),
-    ToolOutputProvider(memory, "tool_respond", FullHistoryStrategy() | RecencyStrategy(10) | ChunkToFileStrategy("./mid",4000,4000)),
+    HistoryProvider(memory2, "agent_history", FullHistoryStrategy()),
+    ToolOutputProvider(memory2, "tool_respond", FullHistoryStrategy() | RecencyStrategy(10) | ChunkToFileStrategy("./mid",4000,4000)),
 ]
 
 # ── 上下文管理类 ──────────────────────────────────────────────────
@@ -59,5 +60,5 @@ engine = ContextEngine(
 
 plan_engine = ContextEngine(
     providers=plan_providers,
-    memory=memory,
+    memory=memory2,
 )
