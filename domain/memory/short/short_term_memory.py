@@ -37,3 +37,6 @@ class ShortTermMemory(ABC):
 
     @abstractmethod
     def clear(self) -> None: ...
+
+    @abstractmethod
+    def clear_field(self, field: memory_field) -> None: ...

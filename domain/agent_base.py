@@ -87,11 +87,15 @@ class AgentBase(ABC):
     # ── 生命周期 ──────────────────────────────────────────────────
 
     async def start(self, prompt: str) -> None:
-        self.states["prompt"] = prompt
-        self.states["final"] = ""
-        self.states["is_finished"] = False
-        self.states["finish_reason"] = ""
+        self._prepare_start(prompt, keep_history=False)
         await self.run()
+        self._store_dialogue_history()
+
+    async def start_with_history(self, prompt: str) -> None:
+        self._prepare_start(prompt, keep_history=True)
+        await self.run()
+        self._store_dialogue_history()
+
 
     async def run(self) -> None:
         while True:
@@ -247,3 +251,32 @@ class AgentBase(ABC):
             finish_reason=data.get("finish_reason", ""),
             final=data.get("final", ""),
         )
+
+    # ──工具函数 ──────────────────────────────────────────────────
+
+    def _prepare_start(self, prompt: str, keep_history: bool) -> None:
+        memory = self.context_engine.get_memory()
+        memory.clear_field("tool_respond")
+        if not keep_history:
+            memory.clear_field("agent_history")
+        self.states["prompt"] = prompt
+        self.states["final"] = ""
+        self.states["think"] = ""
+        self.states["is_finished"] = False
+        self.states["finish_reason"] = ""
+        self.states["tool_history"] = []
+        self.states["last_tool_ok"] = True
+        self.states["retry"] = 0
+        self.states["tool_retry"] = 0
+
+    def _store_dialogue_history(self) -> None:
+        prompt = self.states.get("prompt", "")
+        final = self.states.get("final", "")
+        if not prompt and not final:
+            return
+        content = (
+            "### 一轮对话\n"
+            f"用户：{prompt}\n"
+            f"Agent：{final}\n"
+        )
+        self.context_engine.get_memory().store("agent_history", "dialogue", content)
