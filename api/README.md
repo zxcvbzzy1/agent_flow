@@ -306,6 +306,30 @@ database: agent_flow
 - `application/services/runs.py`
 - `application/services/events.py`
 
+### `GET /api/runs`
+
+查询已创建 run 列表，按创建时间倒序返回。
+
+响应结构：
+
+```json
+{
+  "items": [
+    {
+      "run_id": "uuid",
+      "status": "pending",
+      "prompt": "...",
+      "planner_agent_id": "default_planner",
+      "executor_agent_ids": ["default_executor"],
+      "context_id": "default_step",
+      "created_at": 1710000000.0,
+      "started_at": null,
+      "finished_at": null
+    }
+  ]
+}
+```
+
 ### `POST /api/runs`
 
 创建一次编排任务。默认会立即后台启动。

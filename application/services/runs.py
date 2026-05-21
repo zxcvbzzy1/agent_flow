@@ -120,7 +120,21 @@ class RunOrchestrationService:
         auto_start: bool = True,
     ) -> dict[str, Any]:
         run_id = str(uuid.uuid4())
-        executor_agent_ids = executor_agent_ids or ["default_executor"]
+        executor_agent_ids = executor_agent_ids or []
+        if not executor_agent_ids:
+            raise ValueError("executor_agent_ids 不能为空")
+        planner_record = self._agents.get_agent_record(planner_agent_id)
+        if planner_record is None:
+            raise KeyError(f"Planner Agent 不存在: {planner_agent_id}")
+        if planner_record.get("agent_type") != "planner":
+            raise ValueError("planner_agent_id 必须指向 planner agent")
+        for executor_id in executor_agent_ids:
+            executor_record = self._agents.get_agent_record(executor_id)
+            if executor_record is None:
+                raise KeyError(f"Executor Agent 不存在: {executor_id}")
+            if executor_record.get("agent_type") != "executor":
+                raise ValueError(f"executor_agent_id 必须指向 executor agent: {executor_id}")
+        self._contexts.get_engine(context_id)
         record = {
             "run_id": run_id,
             "prompt": prompt,
@@ -142,6 +156,9 @@ class RunOrchestrationService:
             self._tasks[run_id] = task
             task.add_done_callback(lambda _task, rid=run_id: self._tasks.pop(rid, None))
         return record
+
+    def list_runs(self) -> list[dict[str, Any]]:
+        return self._store.find_many("runs", sort=[("created_at", -1)])
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         return self._store.find_one("runs", {"run_id": run_id})

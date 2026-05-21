@@ -20,13 +20,18 @@ async def create_agent(
     request: AgentCreateRequest,
     service: AgentFactoryService = Depends(get_agent_service),
 ):
-    item = service.create_agent(
-        name=request.name,
-        agent_type=request.agent_type,
-        context_id=request.context_id,
-        role_prompt=request.role_prompt,
-        metadata=request.metadata,
-    )
+    try:
+        item = service.create_agent(
+            name=request.name,
+            agent_type=request.agent_type,
+            context_id=request.context_id,
+            role_prompt=request.role_prompt,
+            metadata=request.metadata,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"item": item}
 
 
