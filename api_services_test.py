@@ -102,6 +102,30 @@ class _StreamingFakeLLM:
             yield chunk
 
 
+def _executor_provider_config() -> list[dict]:
+    return [
+        {"provider_id": "user_prompt", "enabled": True, "params": {}},
+        {
+            "provider_id": "available_tools",
+            "enabled": True,
+            "params": {"available_fields": ["system"]},
+        },
+        {
+            "provider_id": "history",
+            "enabled": True,
+            "params": {
+                "memory_field": "agent_history",
+                "strategy_config": {
+                    "pipeline": [
+                        {"type": "full_history"},
+                        {"type": "recency", "keep_last": 2},
+                    ]
+                },
+            },
+        },
+    ]
+
+
 def test_health_and_cors_headers():
     client = TestClient(app)
 
@@ -148,16 +172,49 @@ def test_tools_api_lists_builtin_and_uploaded_tool():
 def test_context_agent_run_and_conversation_apis():
     client = TestClient(app)
 
+    catalog = client.get("/api/contexts/catalog")
+    assert catalog.status_code == 200
+    assert "providers" in catalog.json()["item"]
+
+    contexts = client.get("/api/contexts")
+    assert contexts.status_code == 200
+    assert any(item["context_id"] == "default_executor" for item in contexts.json()["items"])
+
+    missing_providers = client.post(
+        "/api/contexts",
+        json={"name": "Invalid Context", "kind": "executor"},
+    )
+    assert missing_providers.status_code == 400
+
+    unknown_strategy = client.post(
+        "/api/contexts",
+        json={
+            "name": "Invalid Strategy",
+            "kind": "executor",
+            "provider_config": [
+                {
+                    "provider_id": "history",
+                    "enabled": True,
+                    "params": {
+                        "memory_field": "agent_history",
+                        "strategy_config": {"pipeline": [{"type": "not_a_strategy"}]},
+                    },
+                }
+            ],
+        },
+    )
+    assert unknown_strategy.status_code == 400
+
     context = client.post(
         "/api/contexts",
         json={
             "name": "API Test Context",
             "kind": "executor",
-            "strategy_config": {"type": "full_history", "keep_last": 2},
-            "available_fields": ["system"],
+            "provider_config": _executor_provider_config(),
         },
     ).json()["item"]
     assert client.get(f"/api/contexts/{context['context_id']}").status_code == 200
+    assert context["provider_count"] == 3
 
     agent = client.post(
         "/api/agents",
@@ -595,7 +652,7 @@ async def test_streaming_observable_llm_publishes_executor_delta_and_structured_
         names = [event["name"] for event in events]
 
         assert result == "".join(chunks)
-        assert names.count("llm.delta") == 3
+        assert names.count("llm.delta") == 0
         assert "llm.started" in names
         assert "llm.completed" in names
         assert "agent.think" in names

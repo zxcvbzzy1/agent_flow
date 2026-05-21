@@ -175,23 +175,41 @@ database: agent_flow
 - `api/contexts/schemas.py`
 - `application/services/contexts.py`
 
+### `GET /api/contexts`
+
+查询所有上下文配置，并返回当前进程内 engine 加载状态。
+
+### `GET /api/contexts/catalog`
+
+查询可用的内置 provider、strategy 和默认模板。
+
 ### `POST /api/contexts`
 
-创建上下文配置，并在服务内构建对应 `ContextEngine`。
+按新版 `provider_config` 创建上下文配置，并在服务内构建对应 `ContextEngine`。`provider_config` 不能为空。
 
 请求体：
 
 ```json
 {
-  "name": "Default Executor",
+  "name": "自定义执行者上下文",
   "kind": "executor",
-  "provider_config": [],
-  "strategy_config": {
-    "type": "full_history",
-    "keep_last": 10,
-    "token_limit": 4000
-  },
-  "available_fields": ["system", "write_agent", "human"]
+  "provider_config": [
+    {"provider_id": "user_prompt", "enabled": true, "params": {}},
+    {"provider_id": "available_tools", "enabled": true, "params": {"available_fields": ["system", "human"]}},
+    {
+      "provider_id": "tool_output",
+      "enabled": true,
+      "params": {
+        "memory_field": "tool_respond",
+        "strategy_config": {
+          "pipeline": [
+            {"type": "full_history"},
+            {"type": "recency", "keep_last": 5}
+          ]
+        }
+      }
+    }
+  ]
 }
 ```
 
@@ -208,10 +226,11 @@ database: agent_flow
   "item": {
     "context_id": "uuid",
     "kind": "executor",
-    "name": "Default Executor",
+    "name": "自定义执行者上下文",
     "provider_config": [],
-    "strategy_config": {},
-    "available_fields": []
+    "provider_count": 3,
+    "provider_names": ["user_prompt", "available_tools", "tool_output"],
+    "engine_loaded": true
   }
 }
 ```
