@@ -64,6 +64,5 @@ if __name__ == "__main__":
         "index:app",   # index.py 文件名
         host="0.0.0.0",
         port=8000,
-        # reload=True,
-        # reload_excludes=["create_folders.py", "agent_flow/temp/*"]
+        reload=True,
     )

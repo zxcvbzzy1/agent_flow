@@ -10,18 +10,29 @@ from application.services.contexts import ContextService
 router = APIRouter(prefix="/api/contexts", tags=["contexts"])
 
 
+@router.get("")
+async def list_contexts(service: ContextService = Depends(get_context_service)):
+    return {"items": service.list_contexts()}
+
+
+@router.get("/catalog")
+async def get_context_catalog(service: ContextService = Depends(get_context_service)):
+    return {"item": service.catalog()}
+
+
 @router.post("")
 async def create_context(
     request: ContextCreateRequest,
     service: ContextService = Depends(get_context_service),
 ):
-    item = service.create_context(
-        kind=request.kind,
-        name=request.name,
-        provider_config=request.provider_config,
-        strategy_config=request.strategy_config,
-        available_fields=request.available_fields,
-    )
+    try:
+        item = service.create_context(
+            kind=request.kind,
+            name=request.name,
+            provider_config=request.provider_config,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"item": item}
 
 
@@ -34,4 +45,3 @@ async def get_context(
     if item is None:
         raise HTTPException(status_code=404, detail="context not found")
     return {"item": item}
-
