@@ -6,7 +6,6 @@ from api.conversations.schemas import (
     ConversationCreateRequest,
     ConversationRunCreateRequest,
     MessageCreateRequest,
-    QueueCreateRequest,
 )
 from api.core.dependencies import get_conversation_service, get_run_service
 from application.services.conversations import ConversationService
@@ -78,31 +77,6 @@ async def add_message(
     return {"item": item}
 
 
-@router.post("/{conversation_id}/queue")
-async def enqueue_message(
-    conversation_id: str,
-    request: QueueCreateRequest,
-    service: ConversationService = Depends(get_conversation_service),
-):
-    try:
-        item = service.enqueue_message(
-            conversation_id=conversation_id,
-            message_id=request.message_id,
-            metadata=request.metadata,
-        )
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {"item": item}
-
-
-@router.get("/{conversation_id}/queue")
-async def list_queue(
-    conversation_id: str,
-    service: ConversationService = Depends(get_conversation_service),
-):
-    return {"items": service.list_queue(conversation_id)}
-
-
 @router.post("/{conversation_id}/runs")
 async def create_run_from_conversation(
     conversation_id: str,
@@ -111,21 +85,28 @@ async def create_run_from_conversation(
     runs: RunOrchestrationService = Depends(get_run_service),
 ):
     try:
-        message = conversations.latest_pending_user_message(conversation_id)
+        message = conversations.get_message(conversation_id, request.message_id)
+        if message.get("role") != "user":
+            raise ValueError("只能从 user 消息创建 run")
         run = runs.create_run(
             prompt=message["content"],
+            mode=request.mode,
+            executor_agent_id=request.executor_agent_id,
             planner_agent_id=request.planner_agent_id,
             executor_agent_ids=request.executor_agent_ids,
             context_id=request.context_id,
             max_replan_rounds=request.max_replan_rounds,
             conversation_id=conversation_id,
             message_id=message["message_id"],
+            auto_start=request.auto_start,
         )
-        conversations.mark_queue_processing(
+        conversations.attach_message_run(
             conversation_id=conversation_id,
             message_id=message["message_id"],
             run_id=run["run_id"],
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"item": run}

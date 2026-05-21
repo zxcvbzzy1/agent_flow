@@ -45,3 +45,16 @@ async def get_context(
     if item is None:
         raise HTTPException(status_code=404, detail="context not found")
     return {"item": item}
+
+
+@router.delete("/{context_id}")
+async def delete_context(
+    context_id: str,
+    service: ContextService = Depends(get_context_service),
+):
+    try:
+        return {"item": service.delete_context(context_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

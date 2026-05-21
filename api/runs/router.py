@@ -30,6 +30,8 @@ async def create_run(
     try:
         item = service.create_run(
             prompt=request.prompt,
+            mode=request.mode,
+            executor_agent_id=request.executor_agent_id,
             planner_agent_id=request.planner_agent_id,
             executor_agent_ids=request.executor_agent_ids,
             context_id=request.context_id,

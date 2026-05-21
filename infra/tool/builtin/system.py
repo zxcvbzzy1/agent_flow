@@ -24,7 +24,7 @@ BASH = Tool(
         },
         "required": ["command"]
     },
-    metadata={"require_human_confirm": True},
+    # metadata={"require_human_confirm": True},
 )
 
 class SystemTool():

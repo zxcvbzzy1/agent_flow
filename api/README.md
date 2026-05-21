@@ -40,8 +40,8 @@ database: agent_flow
 | `api/agents/schemas.py` | Agent 创建请求体。 |
 | `api/runs/router.py` | Agent 编排 run 创建、查询、SSE 事件流接口。 |
 | `api/runs/schemas.py` | Run 创建请求体。 |
-| `api/conversations/router.py` | 会话、消息、对话队列、从会话创建 run、删除会话的接口。 |
-| `api/conversations/schemas.py` | 会话、消息、队列请求体。 |
+| `api/conversations/router.py` | 会话、消息、从会话消息创建 run、删除会话的接口。 |
+| `api/conversations/schemas.py` | 会话、消息、会话 run 请求体。 |
 
 对应应用层服务：
 
@@ -50,9 +50,9 @@ database: agent_flow
 | `ToolRegistryService` | `application/services/tools.py` | 加载内置工具，上传工具声明和实现源码，注册工具事件，删除上传工具。 |
 | `ContextService` | `application/services/contexts.py` | 创建 `ContextEngine`，管理默认 executor/planner/step 上下文。 |
 | `AgentFactoryService` | `application/services/agents.py` | 创建 planner 或 executor agent，删除非默认 Agent 并清理关联 run/event。 |
-| `RunOrchestrationService` | `application/services/runs.py` | 创建 run，后台执行 `PlanOrchestrator`，更新 run 和对话队列状态。 |
+| `RunOrchestrationService` | `application/services/runs.py` | 创建 react/plan run，后台执行 Agent 或 `PlanOrchestrator`，写回 assistant 消息。 |
 | `EventStreamService` | `application/services/events.py` | 写入事件日志并提供 SSE 输出。 |
-| `ConversationService` | `application/services/conversations.py` | 创建会话、保存消息、维护 message queue，删除会话及关联消息、队列、run/event。 |
+| `ConversationService` | `application/services/conversations.py` | 创建会话、保存消息，删除会话及关联消息、run/event。 |
 
 ## 基础接口
 
@@ -239,6 +239,24 @@ database: agent_flow
 
 查询单个上下文配置。
 
+### `DELETE /api/contexts/{context_id}`
+
+删除未被引用的自定义 ContextEngine。默认 ContextEngine（`default_executor`、`default_planner`、`default_step`）不可删除；已被 Agent 或 Run 引用的 ContextEngine 会返回 `400`。
+
+成功响应：
+
+```json
+{
+  "item": {
+    "deleted": true,
+    "context_id": "uuid",
+    "stats": {
+      "contexts": 1
+    }
+  }
+}
+```
+
 ## Agent 接口
 
 文件：
@@ -332,12 +350,26 @@ database: agent_flow
 
 ### `POST /api/runs`
 
-创建一次编排任务。默认会立即后台启动。
+创建一次 Agent run。`mode=react` 调用单一 executor，`mode=plan` 使用 planner + executors 编排。默认会立即后台启动。
 
-请求体：
+React 请求体：
 
 ```json
 {
+  "mode": "react",
+  "prompt": "你好",
+  "executor_agent_id": "default_executor",
+  "conversation_id": null,
+  "message_id": null,
+  "auto_start": true
+}
+```
+
+Plan 请求体：
+
+```json
+{
+  "mode": "plan",
   "prompt": "请分析项目并生成总结",
   "planner_agent_id": "default_planner",
   "executor_agent_ids": ["default_executor"],
@@ -353,7 +385,9 @@ database: agent_flow
 
 | 字段 | 说明 |
 |---|---|
+| `mode` | 运行模式：`react` 或 `plan`。 |
 | `prompt` | 用户任务输入。 |
+| `executor_agent_id` | React 模式下使用的执行者 Agent id。 |
 | `planner_agent_id` | 编排者 Agent id，默认 `default_planner`。 |
 | `executor_agent_ids` | 执行者 Agent id 列表。 |
 | `context_id` | step prompt 上下文，默认 `default_step`。 |
@@ -497,7 +531,7 @@ data: {"event_id":"...","run_id":"...","name":"workflow.started","payload":{}}
 }
 ```
 
-## 会话、消息与队列接口
+## 会话、消息接口
 
 文件：
 
@@ -528,7 +562,7 @@ data: {"event_id":"...","run_id":"...","name":"workflow.started","payload":{}}
 
 ### `DELETE /api/conversations/{conversation_id}`
 
-删除会话，并级联删除该会话下的 messages、message_queue、runs，以及这些 run 对应的 events。
+删除会话，并级联删除该会话下的 messages、runs，以及这些 run 对应的 events。
 
 响应结构：
 
@@ -540,7 +574,6 @@ data: {"event_id":"...","run_id":"...","name":"workflow.started","payload":{}}
     "stats": {
       "conversations": 1,
       "messages": 2,
-      "message_queue": 1,
       "runs": 1,
       "events": 5
     }
@@ -567,51 +600,39 @@ data: {"event_id":"...","run_id":"...","name":"workflow.started","payload":{}}
 }
 ```
 
-### `POST /api/conversations/{conversation_id}/queue`
+### `POST /api/conversations/{conversation_id}/runs`
 
-将指定消息加入对话队列。如果不传 `message_id`，默认取最新一条用户消息。
+从指定用户消息直接创建 run，并把 `conversation_id`、`message_id` 关联到 run。
 
 请求体：
 
 ```json
 {
+  "mode": "react",
   "message_id": "uuid",
-  "metadata": {}
+  "executor_agent_id": "default_executor",
+  "auto_start": true
 }
 ```
 
-队列状态：
-
-- `pending`
-- `processing`
-- `done`
-- `failed`
-- `cancelled`
-
-### `GET /api/conversations/{conversation_id}/queue`
-
-查询会话队列。
-
-### `POST /api/conversations/{conversation_id}/runs`
-
-从最新 pending 用户消息创建 run，并把 `conversation_id`、`message_id` 关联到 run。创建成功后，对应队列项会标记为 `processing`。
-
-请求体：
+或：
 
 ```json
 {
+  "mode": "plan",
+  "message_id": "uuid",
   "planner_agent_id": "default_planner",
   "executor_agent_ids": ["default_executor"],
   "context_id": "default_step",
-  "max_replan_rounds": 3
+  "max_replan_rounds": 3,
+  "auto_start": true
 }
 ```
 
 当 run 完成后：
 
-- 队列项更新为 `done`。
-- 如果 run 失败，队列项更新为 `failed`。
 - 成功时会把 Agent 最终结果写入一条 `assistant` 消息。
+- 如果 run 失败或取消，错误通过 run 状态和 SSE 事件展示，不写入 assistant 消息。
 
 ## 典型调用流
 
@@ -624,14 +645,13 @@ data: {"event_id":"...","run_id":"...","name":"workflow.started","payload":{}}
 5. `GET /api/runs/{run_id}/events` 监听 SSE。
 6. `GET /api/runs/{run_id}` 查询最终结果。
 
-### 从聊天消息创建编排任务
+### 从聊天消息创建任务
 
 1. `POST /api/conversations` 创建会话。
 2. `POST /api/conversations/{conversation_id}/messages` 写入用户消息。
-3. `POST /api/conversations/{conversation_id}/queue` 将消息入队。
-4. `POST /api/conversations/{conversation_id}/runs` 从队列消息创建 run。
-5. `GET /api/runs/{run_id}/events` 监听编排事件。
-6. `GET /api/conversations/{conversation_id}/messages` 查看用户消息和 assistant 回复。
+3. `POST /api/conversations/{conversation_id}/runs` 从该消息创建 react 或 plan run。
+4. `GET /api/runs/{run_id}/events` 监听执行事件。
+5. `GET /api/conversations/{conversation_id}/messages` 查看用户消息和 assistant 回复。
 
 ## 跨域配置
 
