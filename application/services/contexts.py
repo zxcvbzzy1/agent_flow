@@ -5,6 +5,7 @@ import uuid
 from typing import Any
 
 from domain.agent.plan.providers import (
+    AvailableExecutorsProvider,
     ExecutorStatusProvider,
     PlanObservationProvider,
     PlanStepPromptProvider,
@@ -51,6 +52,7 @@ class ContextService:
                 {"provider_id": "available_tools", "name": "可用工具", "params": ["available_fields"]},
                 {"provider_id": "history", "name": "对话历史", "params": ["memory_field", "strategy_config"]},
                 {"provider_id": "tool_output", "name": "工具反馈", "params": ["memory_field", "strategy_config"]},
+                {"provider_id": "available_executors", "name": "可用执行者", "params": []},
                 {"provider_id": "executor_status", "name": "执行者状态", "params": []},
                 {"provider_id": "plan_observations", "name": "计划观察", "params": []},
                 {"provider_id": "plan_step_prompt", "name": "计划步骤 Prompt", "params": []},
@@ -91,6 +93,7 @@ class ContextService:
             "planner": [
                 {"provider_id": "user_prompt", "enabled": True, "params": {}},
                 {"provider_id": "state", "enabled": True, "params": {}},
+                {"provider_id": "available_executors", "enabled": True, "params": {}},
                 {"provider_id": "executor_status", "enabled": True, "params": {}},
                 {"provider_id": "plan_observations", "enabled": True, "params": {}},
                 {
@@ -215,6 +218,8 @@ class ContextService:
                 params.get("memory_field", "tool_respond"),
                 self._build_strategy_pipeline(params.get("strategy_config")),
             )
+        if provider_id == "available_executors":
+            return AvailableExecutorsProvider()
         if provider_id == "executor_status":
             return ExecutorStatusProvider()
         if provider_id == "plan_observations":

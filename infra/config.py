@@ -1,7 +1,7 @@
 import os
 
 from domain.agent_base import AgentBase
-from domain.agent.plan.providers import ExecutorStatusProvider, PlanObservationProvider
+from domain.agent.plan.providers import AvailableExecutorsProvider, ExecutorStatusProvider, PlanObservationProvider
 from domain.context.context import ContextEngine
 from domain.context.providers import *
 from domain.context.strategy import FullHistoryStrategy, LatestOnlyStrategy, RecencyStrategy, TokenBudgetStrategy
@@ -46,6 +46,7 @@ providers = [
 plan_providers = [
     UserPromptProvider(),
     StateProvider(),
+    AvailableExecutorsProvider(),
     ExecutorStatusProvider(),
     PlanObservationProvider(),
     HistoryProvider(memory2, "agent_history", FullHistoryStrategy()),

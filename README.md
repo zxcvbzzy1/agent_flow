@@ -22,6 +22,8 @@ plan agent构建，基于agent基类构建计划型agent
 
 项目采用应用层 / 领域层 / 基础设施层分层：
 
+- `api/`：FastAPI HTTP/SSE 适配层，负责路由、CORS、依赖注入和对外接口。接口详情见 [FastAPI API 文档](api/README.md)。
+- `application/`：应用层用例服务，负责工具注册、ContextEngine 管理、Agent 工厂、Run 编排、会话消息、前端事件桥接。
 - `domain/`：领域模型与抽象能力，包括 Agent、Tool、Event、Context、State、Memory。
 - `infra/`：基础设施实现，包括事件总线、LLM 客户端、工具实现、配置装配。
 - `domain/agent/`：具体 Agent 模式，包括 ReACT 执行型 Agent、PlanAgent 能力对象、多 Agent 编排者。
@@ -261,6 +263,7 @@ async def confirm(**kwargs) -> Event:
 | `UserPromptProvider` | `domain/context/providers.py` | 用户原始需求 |
 | `StateProvider` | `domain/context/providers.py` | 当前执行状态 |
 | `AvailableToolsProvider` | `domain/context/providers.py` | 当前可用工具列表 |
+| `AvailableExecutorsProvider` | `domain/agent/plan/providers.py` | PlanAgent 可用执行者名称与能力描述 |
 | `ExecutorStatusProvider` | `domain/agent/plan/providers.py` | Orchestrator 中的 executor 状态 |
 | `PlanStepPromptProvider` | `domain/agent/plan/providers.py` | 单个计划步骤的执行 prompt |
 | `PlanObservationProvider` | `domain/agent/plan/providers.py` | 已完成 / 失败 / 跳过步骤 observation |
@@ -496,8 +499,44 @@ print(orchestrator.state.final)
 
 ## 目录速览
 
+FastAPI 后端接口、请求体、SSE 事件和启动方式请跳转到：[api/README.md](api/README.md)。
+
 ```text
+api/
+  index.py                         # FastAPI app、CORS、/health、业务路由挂载
+  README.md                        # FastAPI 接口与启动说明
+  core/
+    config.py                      # API 配置、MongoDB、CORS origins
+    dependencies.py                # ServiceContainer 与依赖注入
+  tools/
+    router.py                      # 工具查询、上传、删除
+    schemas.py                     # 工具 API 请求体
+  contexts/
+    router.py                      # ContextEngine catalog、创建、查询、删除
+    schemas.py                     # Context API 请求体
+  agents/
+    router.py                      # Agent 查询、创建、删除
+    schemas.py                     # Agent API 请求体
+  runs/
+    router.py                      # React/Plan run、SSE、确认、中断
+    schemas.py                     # Run API 请求体
+  conversations/
+    router.py                      # 会话、消息、会话消息启动 run、删除会话
+    schemas.py                     # 会话 API 请求体
+
 application/
+  services/
+    tools.py                       # 工具加载、上传、删除与事件 spec 刷新
+    contexts.py                    # ContextEngine catalog、模板、provider/strategy 管道组装
+    agents.py                      # Planner/Executor 工厂与运行时实例管理
+    runs.py                        # React/Plan run 创建、执行、取消、历史写回
+    conversations.py               # 会话与消息管理
+    events.py                      # 前端 SSE 事件持久化、队列与格式化
+    llm_streaming.py               # LLM 流式输出转前端事件
+  events/
+    bridge.py                      # 内部事件到前端 SSE 的桥接
+    human_confirmation.py          # 网页人类确认 pending/resolve 管理
+    schemas.py                     # 前端事件 payload 构造
   agent/
     bash_agent.py                  # bash ReACT agent 应用示例
     story_write_agent.py           # 故事写作 ReACT agent 应用示例
@@ -508,14 +547,12 @@ domain/
   tool.py                          # Tool / Tool_respond
   event.py                         # Event / EventBusPort / ToolEventFactory
   state.py                         # Agent_state / Plan / PlanStep
+  runtime_hooks.py                 # 运行时端口：工具事件观察、人类确认、run context
   agent/
     plan/
       planAgent.py                 # Planner 能力对象
       orchestrator.py              # 多 Agent 编排者
       providers.py                 # Plan 专属 providers
-    write/
-      writeAgent.py                # 写作 executor
-      tools.py                     # 写作工具兼容导入入口
   context/
     context.py                     # ContextEngine
     providers.py                   # 通用 providers
@@ -528,6 +565,13 @@ infra/
   config.py                        # 运行时依赖装配
   eventbus.py                      # EventBus 具体实现
   event_bind.py                    # 事件绑定器
+  LLM/
+    LLM_infra.py                   # LLM 客户端与流式基础能力
+  db/
+    mongodb.py                     # MongoDB + 内存 fallback 文档存储
+    milvus_rag.py                  # Milvus/RAG 基础设施
+  context/
+    db_strategy.py                 # 文件/数据库相关 context strategy
   tool/
     builtin/
       declare.py                   # 通用工具声明

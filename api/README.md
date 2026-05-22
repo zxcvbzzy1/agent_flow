@@ -2,6 +2,8 @@
 
 `api/` 是 FastAPI 的 HTTP/SSE 适配层，只负责请求解析、响应返回、跨域和路由挂载。业务用例放在 `application/services/`，领域能力仍由 `domain/` 和 `infra/` 提供。
 
+项目总览与领域/基础设施说明见：[../README.md](../README.md)。
+
 ## 启动方式
 
 项目 Python 环境：
@@ -27,18 +29,44 @@ database: agent_flow
 
 ## 目录职责
 
+当前 `api/` 目录结构：
+
+```text
+api/
+  index.py                         # FastAPI app、CORS、/health、业务路由挂载
+  README.md                        # 当前 API 文档
+  core/
+    config.py                      # API 配置：app、MongoDB、CORS origins
+    dependencies.py                # ServiceContainer、依赖构建与运行时 hook 注册
+  tools/
+    router.py                      # 工具列表、上传、删除
+    schemas.py                     # 工具上传请求体
+  contexts/
+    router.py                      # ContextEngine 列表、catalog、创建、查询、删除
+    schemas.py                     # Context 创建请求体
+  agents/
+    router.py                      # Agent 列表、创建、删除
+    schemas.py                     # Agent 创建请求体
+  runs/
+    router.py                      # Run 列表、创建、查询、SSE、确认、中断
+    schemas.py                     # Run 创建请求体
+  conversations/
+    router.py                      # 会话、消息、从消息启动 run、删除会话
+    schemas.py                     # 会话、消息、会话 run 请求体
+```
+
 | 文件/目录 | 职责 |
 |---|---|
 | `api/index.py` | 创建 FastAPI app，注册 CORS，挂载所有业务路由，提供 `/health`。 |
 | `api/core/config.py` | API 配置，包括 app 名称、MongoDB 地址、数据库名、CORS origins。 |
-| `api/core/dependencies.py` | 构建并缓存 `ServiceContainer`，统一注入应用服务。 |
+| `api/core/dependencies.py` | 构建并缓存 `ServiceContainer`，统一注入应用服务，并注册前端事件桥、人类确认、run context hook。 |
 | `api/tools/router.py` | 工具注册、查询与删除接口。 |
 | `api/tools/schemas.py` | 工具上传请求体。 |
-| `api/contexts/router.py` | 上下文配置创建与查询接口。 |
+| `api/contexts/router.py` | 上下文配置 catalog、创建、查询与删除接口。 |
 | `api/contexts/schemas.py` | 上下文创建请求体。 |
 | `api/agents/router.py` | Agent 创建、查询与删除接口。 |
 | `api/agents/schemas.py` | Agent 创建请求体。 |
-| `api/runs/router.py` | Agent 编排 run 创建、查询、SSE 事件流接口。 |
+| `api/runs/router.py` | React/Plan run 创建、查询、取消、SSE 事件流、人类确认接口。 |
 | `api/runs/schemas.py` | Run 创建请求体。 |
 | `api/conversations/router.py` | 会话、消息、从会话消息创建 run、删除会话的接口。 |
 | `api/conversations/schemas.py` | 会话、消息、会话 run 请求体。 |
@@ -52,7 +80,10 @@ database: agent_flow
 | `AgentFactoryService` | `application/services/agents.py` | 创建 planner 或 executor agent，删除非默认 Agent 并清理关联 run/event。 |
 | `RunOrchestrationService` | `application/services/runs.py` | 创建 react/plan run，后台执行 Agent 或 `PlanOrchestrator`，写回 assistant 消息。 |
 | `EventStreamService` | `application/services/events.py` | 写入事件日志并提供 SSE 输出。 |
+| `StreamingObservableLLMClient` | `application/services/llm_streaming.py` | 包装 LLM 流式输出，发布 `llm.*` 与结构化 Agent 输出事件。 |
 | `ConversationService` | `application/services/conversations.py` | 创建会话、保存消息，删除会话及关联消息、run/event。 |
+| `FrontendEventBridge` | `application/events/bridge.py` | 将内部工具/Agent/Workflow 事件镜像为前端 SSE 事件。 |
+| `HumanConfirmationService` | `application/events/human_confirmation.py` | 管理网页人类确认请求与确认结果。 |
 
 ## 基础接口
 

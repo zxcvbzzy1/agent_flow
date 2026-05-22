@@ -3,6 +3,32 @@ from __future__ import annotations
 from domain.context.providers import ContextProvider
 
 
+class AvailableExecutorsProvider(ContextProvider):
+    """可用执行者能力说明，供 PlanAgent 选择合适 executor。"""
+    name = "available_executors"
+
+    def get(self, state: dict) -> list[str]:
+        executors = state.get("executors", {})
+        if not executors:
+            return ["## 可用执行者\n当前没有可用执行者。"]
+
+        parts = ["## 可用执行者"]
+        for executor_id, executor in executors.items():
+            if isinstance(executor, dict):
+                name = executor.get("name") or executor_id
+                description = executor.get("description") or ""
+            else:
+                name = getattr(executor, "name", executor_id)
+                description = getattr(executor, "description", "")
+
+            line = f"- executor_id: {executor_id}; name: {name}"
+            if description:
+                line += f"; description: {description}"
+            parts.append(line)
+
+        return ["\n".join(parts)]
+
+
 class ExecutorStatusProvider(ContextProvider):
     """当前可用执行者状态，供 PlanAgent 规划和编排。"""
     name = "executors"

@@ -186,6 +186,7 @@ class PlanOrchestrator:
             state = getattr(executor, "states", {})
             status[executor_id] = {
                 "name": getattr(executor, "name", executor_id),
+                "description": getattr(executor, "description", ""),
                 "is_finished": state.get("is_finished", False),
                 "final": state.get("final", ""),
                 "finish_reason": state.get("finish_reason", ""),
