@@ -157,19 +157,25 @@ class AgentFactoryService:
         context = self._contexts.get_engine(record["context_id"])
         llm = self._build_llm(record)
         if record.get("agent_type") == "planner":
-            return PlanAgent(
+            agent = PlanAgent(
                 id=record["agent_id"],
                 name=record["name"],
                 llm=llm,
                 context=context,
             )
-        return APIExecutorAgent(
-            id=record["agent_id"],
-            name=record["name"],
-            llm=llm,
-            context=context,
-            role_prompt=record.get("role_prompt", ""),
-        )
+        else:
+            agent = APIExecutorAgent(
+                id=record["agent_id"],
+                name=record["name"],
+                llm=llm,
+                context=context,
+                role_prompt=record.get("role_prompt", ""),
+            )
+
+        description = (record.get("metadata") or {}).get("description")
+        if description:
+            agent.inject_attribute(description=description)
+        return agent
 
     def _build_llm(self, record: dict[str, Any]):
         if self._events is None:

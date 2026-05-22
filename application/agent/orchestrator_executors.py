@@ -3,6 +3,7 @@ import os
 from domain.agent.plan.orchestrator import OrchestratorState, PlanOrchestrator
 from domain.agent.plan.planAgent import PlanAgent
 from domain.agent.plan.providers import (
+    AvailableExecutorsProvider,
     ExecutorStatusProvider,
     PlanObservationProvider,
     PlanStepPromptProvider,
@@ -38,6 +39,7 @@ planner_context = ContextEngine(
     providers=[
         UserPromptProvider(),
         StateProvider(),
+        AvailableExecutorsProvider(),
         PlanObservationProvider(),
         ExecutorStatusProvider(),
     ],
@@ -71,4 +73,3 @@ orchestrator = PlanOrchestrator(
     state=OrchestratorState(),
     max_replan_rounds=3,
 )
-

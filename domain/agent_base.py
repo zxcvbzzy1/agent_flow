@@ -71,6 +71,7 @@ class AgentBase(ABC):
         self.id             = id
         self.name           = name
         self._llm           = llm
+        self.description    = ""
         self.states_manage  = Agent_state()
         self.states         = self.states_manage.get_state()
         self.tool_factory   = ToolEventFactory(prefix="infra")
@@ -251,6 +252,12 @@ class AgentBase(ABC):
             finish_reason=data.get("finish_reason", ""),
             final=data.get("final", ""),
         )
+    
+    # ──补充属性注入 ──────────────────────────────────────────────────
+
+    def inject_attribute(self, **kwargs) -> None:
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
     # ──工具函数 ──────────────────────────────────────────────────
 
