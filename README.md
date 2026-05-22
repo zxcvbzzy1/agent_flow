@@ -17,6 +17,7 @@ plan agent构建，基于agent基类构建计划型agent
 构建编排者-执行者模式，Orchestrator 根据plan agent生成任务编排多个 executor agent
 其中任务生成为DAG形式，每次入度为0的任务节点并发多个executor agent任务执行
 
+[agent_flow 网页前端展示](https://github.com/zxcvbzzy1/agent_flow_web_front)
 
 ## 项目架构
 
