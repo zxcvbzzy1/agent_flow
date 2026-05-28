@@ -23,6 +23,7 @@ plan agent构建，基于agent基类构建计划型agent
 
 项目采用应用层 / 领域层 / 基础设施层分层：
 
+- 架构图与组件图见 [docs/架构与组件图.md](docs/架构与组件图.md)，可编辑 Excalidraw 画板见 [docs/AgentFlow架构组件图.excalidraw](docs/AgentFlow架构组件图.excalidraw)，后端 MongoDB ER 图见 [docs/AgentFlow后端ER图.excalidraw](docs/AgentFlow后端ER图.excalidraw)。
 - `api/`：FastAPI HTTP/SSE 适配层，负责路由、CORS、依赖注入和对外接口。接口详情见 [FastAPI API 文档](api/README.md)。
 - `application/`：应用层用例服务，负责工具注册、ContextEngine 管理、Agent 工厂、Run 编排、会话消息、前端事件桥接。
 - `domain/`：领域模型与抽象能力，包括 Agent、Tool、Event、Context、State、Memory。
