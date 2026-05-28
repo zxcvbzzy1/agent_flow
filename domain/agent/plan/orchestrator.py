@@ -69,6 +69,10 @@ class PlanOrchestrator:
         self.max_replan_rounds = max_replan_rounds
         self._replan_rounds = 0
         self.state = state 
+        self._executor_locks: dict[str, asyncio.Lock] = {
+            executor_id: asyncio.Lock()
+            for executor_id in executors
+        }
 
     async def start(self, prompt: str) -> None:
         self._dispatch({
@@ -200,41 +204,47 @@ class PlanOrchestrator:
         }
         return all(dependency in done_step_ids for dependency in step.depends_on)
 
-    async def _run_plan_step(self, step: PlanStep, plan: Plan) -> None:
-        executor = self.executors[step.executor_id]
-        step.status = "in_progress"
+    def _executor_lock(self, executor_id: str) -> asyncio.Lock:
+        if executor_id not in self._executor_locks:
+            self._executor_locks[executor_id] = asyncio.Lock()
+        return self._executor_locks[executor_id]
 
-        step_prompt = self.step_context_engine.build(
-            {
-            **self.state.to_context_dict(),
-            "plan": plan.to_dict(),
-            "executors": self._executor_status(),
-            "current_step": step.to_dict(),
-        }
-        )
-        try:
-            executor.states["is_finished"] = False
-            executor.states["finish_reason"] = ""
-            executor.states["final"] = ""
-            await executor.start(step_prompt)
-            if executor.states.get("is_finished", True):
-                step.status = "done"
-                step.status_reason = executor.states.get("finish_reason", "执行完成")
-            else:
-                step.status = "failed"
-                step.status_reason = executor.states.get("finish_reason", "执行失败")
-        except Exception as exc:
-            step.status = "failed"
-            step.status_reason = f"执行异常: {exc}"
-        finally:
-            step.result_observation = self._build_step_observation(step, executor)
-            await self._publish_event(
-                "plan.step.observed",
+    async def _run_plan_step(self, step: PlanStep, plan: Plan) -> None:
+        async with self._executor_lock(step.executor_id):
+            executor = self.executors[step.executor_id]
+            step.status = "in_progress"
+
+            step_prompt = self.step_context_engine.build(
                 {
-                    "planner_id": self.planner.id,
-                    "step": step.to_dict(),
-                },
+                **self.state.to_context_dict(),
+                "plan": plan.to_dict(),
+                "executors": self._executor_status(),
+                "current_step": step.to_dict(),
+            }
             )
+            try:
+                executor.states["is_finished"] = False
+                executor.states["finish_reason"] = ""
+                executor.states["final"] = ""
+                await executor.start(step_prompt)
+                if executor.states.get("is_finished", True):
+                    step.status = "done"
+                    step.status_reason = executor.states.get("finish_reason", "执行完成")
+                else:
+                    step.status = "failed"
+                    step.status_reason = executor.states.get("finish_reason", "执行失败")
+            except Exception as exc:
+                step.status = "failed"
+                step.status_reason = f"执行异常: {exc}"
+            finally:
+                step.result_observation = self._build_step_observation(step, executor)
+                await self._publish_event(
+                    "plan.step.observed",
+                    {
+                        "planner_id": self.planner.id,
+                        "step": step.to_dict(),
+                    },
+                )
 
     def _build_step_observation(self, step: PlanStep, executor: AgentBase) -> str:
         state = getattr(executor, "states", {})
