@@ -164,10 +164,11 @@ class AgentFactoryService:
             "name": agent.name,
             "agent_type": agent_type,
             "context_id": context_id,
-            "role_prompt": getattr(agent, "_role_prompt", ""),
+            "role_prompt": rp if isinstance(rp := getattr(agent, "_role_prompt", ""), str) else "",
             "metadata": agent_metadata,
         }
         self._store.update_one("agents", {"agent_id": agent.id}, record, upsert=True)
+        agent._llm = self._build_llm(record)
         self._agents[agent.id] = agent
         return record
 
