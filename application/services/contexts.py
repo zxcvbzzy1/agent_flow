@@ -14,11 +14,18 @@ from domain.context.context import ContextEngine
 from domain.context.providers import (
     AvailableToolsProvider,
     HistoryProvider,
+    MemoryProvider,
     StateProvider,
     ToolOutputProvider,
     UserPromptProvider,
 )
-from domain.context.strategy import FullHistoryStrategy, RecencyStrategy, TokenBudgetStrategy
+from domain.context.strategy import (
+    ContextStrategy,
+    FullHistoryStrategy,
+    RecencyStrategy,
+    StrategyPipeline,
+    TokenBudgetStrategy,
+)
 from domain.context.strategy import FilterByToolStrategy, LatestOnlyStrategy, SummarizeStrategy
 from domain.memory.short.default_short_term_memory import DefaultShortTermMemory
 from infra.db.mongodb import DocumentStore
@@ -136,6 +143,32 @@ class ContextService:
         self._engines[context_id] = engine
         return self._with_overview(record)
 
+    def create_context_from_engine(
+        self,
+        kind: str,
+        name: str,
+        engine: ContextEngine,
+        context_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Register an existing ContextEngine and persist its provider config."""
+        context_id = context_id or str(uuid.uuid4())
+        provider_config = [
+            self._provider_to_config(provider)
+            for provider in getattr(engine, "_providers", [])
+        ]
+        if not provider_config:
+            raise ValueError("ContextEngine 至少需要一个 provider")
+
+        record = {
+            "context_id": context_id,
+            "kind": kind,
+            "name": name,
+            "provider_config": provider_config,
+        }
+        self._store.update_one("contexts", {"context_id": context_id}, record, upsert=True)
+        self._engines[context_id] = engine
+        return self._with_overview(record)
+
     def list_contexts(self) -> list[dict[str, Any]]:
         return [
             self._with_overview(record)
@@ -228,6 +261,46 @@ class ContextService:
             return PlanStepPromptProvider()
         raise ValueError(f"未知 provider: {provider_id}")
 
+    def _provider_to_config(self, provider) -> dict[str, Any]:
+        enabled = getattr(provider, "enabled", True)
+        params: dict[str, Any] = {}
+
+        if isinstance(provider, UserPromptProvider):
+            provider_id = "user_prompt"
+        elif isinstance(provider, StateProvider):
+            provider_id = "state"
+        elif isinstance(provider, AvailableToolsProvider):
+            provider_id = "available_tools"
+            params["available_fields"] = list(getattr(provider, "_fields", self.DEFAULT_FIELDS))
+        elif isinstance(provider, HistoryProvider):
+            provider_id = "history"
+            params = self._memory_provider_params(provider)
+        elif isinstance(provider, ToolOutputProvider):
+            provider_id = "tool_output"
+            params = self._memory_provider_params(provider)
+        elif isinstance(provider, AvailableExecutorsProvider):
+            provider_id = "available_executors"
+        elif isinstance(provider, ExecutorStatusProvider):
+            provider_id = "executor_status"
+        elif isinstance(provider, PlanObservationProvider):
+            provider_id = "plan_observations"
+        elif isinstance(provider, PlanStepPromptProvider):
+            provider_id = "plan_step_prompt"
+        else:
+            raise ValueError(f"无法转换 provider: {type(provider).__name__}")
+
+        return {
+            "provider_id": provider_id,
+            "enabled": enabled,
+            "params": params,
+        }
+
+    def _memory_provider_params(self, provider: MemoryProvider) -> dict[str, Any]:
+        return {
+            "memory_field": getattr(provider, "_field", "agent_history"),
+            "strategy_config": self._strategy_to_config(getattr(provider, "_strategy", FullHistoryStrategy())),
+        }
+
     def _build_strategy_pipeline(self, config: dict[str, Any] | None):
         if not isinstance(config, dict) or not isinstance(config.get("pipeline"), list) or not config["pipeline"]:
             raise ValueError("strategy_config 必须包含非空 pipeline")
@@ -256,6 +329,34 @@ class ContextService:
                 raise ValueError("filter_by_tool.tool_names 必须是列表")
             return FilterByToolStrategy(tool_names)
         raise ValueError(f"未知 strategy: {strategy_type}")
+
+    def _strategy_to_config(self, strategy: ContextStrategy) -> dict[str, Any]:
+        strategies = getattr(strategy, "_strategies", None)
+        if isinstance(strategy, StrategyPipeline):
+            strategies = strategy._strategies
+        if not isinstance(strategies, list):
+            strategies = [strategy]
+        return {
+            "pipeline": [
+                self._strategy_item_to_config(item)
+                for item in strategies
+            ]
+        }
+
+    def _strategy_item_to_config(self, strategy: ContextStrategy) -> dict[str, Any]:
+        if isinstance(strategy, FullHistoryStrategy):
+            return {"type": "full_history"}
+        if isinstance(strategy, LatestOnlyStrategy):
+            return {"type": "latest_only"}
+        if isinstance(strategy, RecencyStrategy):
+            return {"type": "recency", "keep_last": getattr(strategy, "_n")}
+        if isinstance(strategy, TokenBudgetStrategy):
+            return {"type": "token_budget", "token_limit": getattr(strategy, "_limit")}
+        if isinstance(strategy, SummarizeStrategy):
+            return {"type": "summarize", "threshold": getattr(strategy, "_threshold")}
+        if isinstance(strategy, FilterByToolStrategy):
+            return {"type": "filter_by_tool", "tool_names": sorted(getattr(strategy, "_names"))}
+        raise ValueError(f"无法转换 strategy: {type(strategy).__name__}")
 
     def _with_overview(self, record: dict[str, Any]) -> dict[str, Any]:
         provider_config = record.get("provider_config", [])
