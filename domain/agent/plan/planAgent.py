@@ -55,6 +55,37 @@ class PlanAgent(AgentBase):
         ]
         return await self._llm.chat(messages)
 
+    def _build_agent_prompt(self) -> str:
+        return f"""
+你是一个任务编排型 PlanAgent，当前工作目录为：{self.work_path}。
+请你调用合适的工具查找信息来生成计划，并依据计划来执行任务。
+
+## 输出格式
+用 JSON 严格按以下格式回复：
+{{
+  "think": "你的思考过程",
+  "tool_calls": [
+    {{
+      "tool_name": "工具名",
+      "arguments": {{"参数名": "参数值"}},
+      "reasoning": "为什么调用这个工具"
+    }}
+  ],
+  "is_finished": false
+}}
+
+## 任务完成时输出
+{{
+  "think": "...",
+  "tool_calls": [],
+  "is_finished": true,
+  "finish_reason": "完成原因",
+  "final": "最终结果"
+}}
+"""
+    
+
+
     def _parse_json(self, raw: str) -> dict[str, Any]:
         text = raw.strip()
         match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)

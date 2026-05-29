@@ -228,9 +228,7 @@ class AgentBase(ABC):
         match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
         if match:
             text = match.group(1).strip()
-        else:
-            pass
-
+        
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
@@ -272,7 +270,7 @@ class AgentBase(ABC):
         self.states["is_finished"] = False
         self.states["finish_reason"] = ""
         self.states["tool_history"] = []
-        self.states["last_tool_ok"] = True
+        self.states["last_tool_ok"] = False
         self.states["retry"] = 0
         self.states["tool_retry"] = 0
 
