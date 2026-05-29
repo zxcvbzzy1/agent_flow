@@ -15,7 +15,33 @@ from application.services.llm_streaming import StreamingObservableLLMClient
 
 class APIExecutorAgent(AgentBase):
     def __init__(self, *args, role_prompt: str = "", **kwargs) -> None:
-        self._role_prompt = role_prompt
+        self._role_prompt = role_prompt + f"""
+## 目标
+根据用户需求，自主决定调用组合合适的工具完成任务。
+
+## 输出格式
+用 JSON 严格按以下格式回复：
+{{
+  "think": "你的思考过程",
+  "tool_calls": [
+    {{
+      "tool_name": "工具名",
+      "arguments": {{"参数名": "参数值"}},
+      "reasoning": "为什么调用这个工具"
+    }}
+  ],
+  "is_finished": false
+}}
+
+## 任务完成时输出
+{{
+  "think": "...",
+  "tool_calls": [],
+  "is_finished": true,
+  "finish_reason": "完成原因",
+  "final": "最终结果"
+}}     
+"""
         super().__init__(*args, **kwargs)
 
     def _build_agent_prompt(self) -> str:
@@ -106,6 +132,43 @@ class AgentFactoryService:
         }
         self._store.update_one("agents", {"agent_id": agent_id}, record, upsert=True)
         self._agents[agent_id] = self._build_agent(record)
+        return record
+
+    def create_agent_from_instance(
+        self,
+        agent: AgentBase | PlanAgent,
+        agent_type: str | None = None,
+        context_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        agent_type = agent_type or ("planner" if isinstance(agent, PlanAgent) else "executor")
+        if agent_type not in {"planner", "executor"}:
+            raise ValueError("agent_type 必须是 planner 或 executor")
+
+        context_id = context_id or f"{agent.id}_context"
+        context_kind = "planner" if agent_type == "planner" else "executor"
+        self._contexts.create_context_from_engine(
+            kind=context_kind,
+            name=f"{agent.name} Context",
+            engine=agent.context_engine,
+            context_id=context_id,
+        )
+
+        agent_metadata = {
+            "description": getattr(agent, "description", ""),
+            "imported_agent_class": type(agent).__name__,
+            **(metadata or {}),
+        }
+        record = {
+            "agent_id": agent.id,
+            "name": agent.name,
+            "agent_type": agent_type,
+            "context_id": context_id,
+            "role_prompt": getattr(agent, "_role_prompt", ""),
+            "metadata": agent_metadata,
+        }
+        self._store.update_one("agents", {"agent_id": agent.id}, record, upsert=True)
+        self._agents[agent.id] = agent
         return record
 
     def list_agents(self) -> list[dict[str, Any]]:
