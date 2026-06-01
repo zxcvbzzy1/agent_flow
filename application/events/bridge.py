@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from domain.event import Event
@@ -52,8 +53,21 @@ class FrontendEventBridge:
 
         payload = event.unpack()
         agent_id = payload.get("agent_id", "")
-        run_id = self.run_id_for_agent(agent_id)
+        run_id = payload.get("run_id") or self.run_id_for_agent(agent_id)
         if not run_id:
+            return
+
+        if frontend_event_name.startswith("artifacts."):
+            mirrored = {
+                "run_id": run_id,
+                "agent_id": agent_id,
+                "event_name": event.name,
+                "frontend_event_name": frontend_event_name,
+                "artifact_type": payload.get("artifact_type"),
+                "artifact": payload.get("artifact", {}),
+                "created_at": payload.get("created_at", time.time()),
+            }
+            self._streams.publish(run_id, frontend_event_name, mirrored)
             return
 
         tool_name = payload.get("tool_name", "")
@@ -77,5 +91,7 @@ class FrontendEventBridge:
         self._streams.publish(run_id, frontend_event_name, mirrored)
 
     def _frontend_tool_event_name(self, internal_name: str) -> str:
+        if internal_name.startswith("artifacts."):
+            return internal_name
         suffix = internal_name.rsplit(".", 1)[-1]
         return self._TOOL_SUFFIX_TO_EVENT.get(suffix, "")

@@ -23,6 +23,7 @@ class ToolRegistryService:
 
     def load_builtin_tools(self) -> None:
         import infra.tool.builtin.system  # noqa: F401
+        import infra.tool.builtin.artifacts  # noqa: F401
         import infra.tool.builtin.story_write  # noqa: F401
         import infra.tool.tools_attach_methods  # noqa: F401
 
