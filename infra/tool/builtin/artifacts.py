@@ -13,8 +13,8 @@ from infra.event_bind import On_bind
 INLINE_ARTIFACT = Tool(
     name="inline_artifact",
     description=(
-        "创建消息内联产物，支持普通消息、图片消息、diff 卡片、"
-        "可编辑文档预览和网页预览。"
+        "创建消息内联产物展示，支持普通消息、图片消息、diff 卡片、"
+        "可编辑文档预览和网页预览。当用户命令有产物要求时，调用这个展示产物"
     ),
     field="system",
     input_schema={
