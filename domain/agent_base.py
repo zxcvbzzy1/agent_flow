@@ -228,20 +228,29 @@ class AgentBase(ABC):
         match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
         if match:
             text = match.group(1).strip()
-        
+
         try:
             data = json.loads(text)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            self._record_parse_error(raw, f"非合规 JSON：{e}")
             return AgentDecision(tool_calls=[], think=raw)
 
-        tool_calls = [
-            ToolCall(
-                tool_name=tc["tool_name"],
-                arguments=tc.get("arguments", {}),
-                reasoning=tc.get("reasoning", ""),
-            )
-            for tc in data.get("tool_calls", [])
-        ]
+        if not isinstance(data, dict):
+            self._record_parse_error(raw, "顶层不是 JSON 对象")
+            return AgentDecision(tool_calls=[], think=raw)
+
+        try:
+            tool_calls = [
+                ToolCall(
+                    tool_name=tc["tool_name"],
+                    arguments=tc.get("arguments", {}),
+                    reasoning=tc.get("reasoning", ""),
+                )
+                for tc in data.get("tool_calls", [])
+            ]
+        except (KeyError, TypeError) as e:
+            self._record_parse_error(raw, f"tool_calls 字段不合规：{e}")
+            return AgentDecision(tool_calls=[], think=data.get("think", ""))
 
         return AgentDecision(
             tool_calls=tool_calls,
@@ -250,6 +259,23 @@ class AgentBase(ABC):
             finish_reason=data.get("finish_reason", ""),
             final=data.get("final", ""),
         )
+
+    def _record_parse_error(self, raw: str, reason: str) -> None:
+        """解析失败时把不合规输出写入短期记忆 error 字段，
+
+        由 ErrorProvider + ConsumeOnceStrategy 在下一轮上下文里回灌一次，提醒模型纠正。
+        """
+        try:
+            memory = self.context_engine.get_memory()
+            memory.store(
+                "error",
+                "parse_error",
+                f"上一轮输出无法解析为合规决策（{reason}）。\n"
+                f"原始输出：\n{raw}\n"
+                f"请严格按系统指令要求的 JSON 格式重新输出。",
+            )
+        except Exception as e:
+            print(f"[parse_error] {self.id} memory store failed: {e}")
     
     # ──补充属性注入 ──────────────────────────────────────────────────
 

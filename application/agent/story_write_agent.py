@@ -9,6 +9,7 @@ import infra.tool.tools_attach_methods  # noqa: F401
 from domain.context.context import ContextEngine
 from domain.context.providers import (
     AvailableToolsProvider,
+    ErrorProvider,
     HistoryProvider,
     StateProvider,
     ToolOutputProvider,
@@ -71,11 +72,12 @@ class StoryWriterAgent(AgentBase):
 
 
 # 故事写作 agent 上下文管理
-story_memory = DefaultShortTermMemory(["tool_respond", "agent_history"])
+story_memory = DefaultShortTermMemory(["tool_respond", "agent_history", "error"])
 story_context = ContextEngine(
     providers=[
         UserPromptProvider(),
         StateProvider(),
+        ErrorProvider(story_memory),
         AvailableToolsProvider(["write_agent", "human"]),
         HistoryProvider(story_memory, "agent_history", FullHistoryStrategy()),
         ToolOutputProvider(

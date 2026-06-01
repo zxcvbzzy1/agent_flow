@@ -62,3 +62,11 @@ class DefaultShortTermMemory(ShortTermMemory):
 
     def clear_field(self, field: memory_field) -> None:
         self._store.pop(field, None)
+
+    def delete_key(self, field: memory_field, key: str) -> None:
+        keys = self._store.get(field)
+        if keys is None:
+            return
+        keys.pop(key, None)
+        if not keys:
+            self._store.pop(field, None)

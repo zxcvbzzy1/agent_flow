@@ -11,6 +11,7 @@ from domain.agent.plan.providers import (
 from domain.context.context import ContextEngine
 from domain.context.providers import (
     AvailableToolsProvider,
+    ErrorProvider,
     HistoryProvider,
     StateProvider,
     ToolOutputProvider,
@@ -32,13 +33,14 @@ llm_client = LLM_Client(
 
 
 # 共享记忆：让 planner 与 executors 能看到工具反馈和历史结果。
-workflow_memory = DefaultShortTermMemory(["tool_respond", "agent_history"])
+workflow_memory = DefaultShortTermMemory(["tool_respond", "agent_history", "error"])
 
 # plan agent 上下文，提供给 planner 用于决策和编排
 planner_context = ContextEngine(
     providers=[
         UserPromptProvider(),
         StateProvider(),
+        ErrorProvider(workflow_memory),
         AvailableExecutorsProvider(),
         PlanObservationProvider(),
         ExecutorStatusProvider(),

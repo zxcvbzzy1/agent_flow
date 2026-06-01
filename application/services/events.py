@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from infra.db.mongodb import DocumentStore
@@ -13,6 +14,20 @@ class EventStreamService:
     def __init__(self, store: DocumentStore) -> None:
         self._store = store
         self._queues: dict[str, list[asyncio.Queue[dict[str, Any]]]] = {}
+        # 同步事件观察者：在 publish 时被回调，供上层（如 im_backend）把运行态事件
+        # 物化成业务记录（例如把 planner.final 落库成房间消息）。回调异常不影响 run。
+        self._subscribers: list[Callable[[dict[str, Any]], None]] = []
+
+    def subscribe(self, callback: Callable[[dict[str, Any]], None]) -> None:
+        self._subscribers.append(callback)
+
+    def _notify_subscribers(self, event: dict[str, Any]) -> None:
+        for callback in list(self._subscribers):
+            try:
+                callback(event)
+            except Exception:
+                # 观察者副作用绝不能打断正在执行的 run。
+                continue
 
     def publish(self, run_id: str, name: str, payload: dict[str, Any]) -> dict[str, Any]:
         event = {
@@ -25,6 +40,7 @@ class EventStreamService:
         self._store.insert_one("events", event)
         for queue in list(self._queues.get(run_id, [])):
             queue.put_nowait(event)
+        self._notify_subscribers(event)
         return event
 
     def no_store_publish(self, run_id: str, name: str, payload: dict[str, Any]) -> dict[str, Any]:
