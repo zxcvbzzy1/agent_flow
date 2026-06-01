@@ -124,6 +124,37 @@ class LatestOnlyStrategy(ContextStrategy):
         return items
 
 
+class ConsumeOnceStrategy(ContextStrategy):
+    """
+    一次性（起始）策略：读取 field 下全部原文注入一次，随即把这些来源从
+    memory 删除——同一条信息只会出现在紧接着的一次上下文里，之后不再出现。
+
+    典型用途：错误回灌。Agent 解析失败后把不合规输出写入 error 字段，
+    下一轮上下文注入该错误提醒模型纠正；注入完即删除，再下一轮就不再出现
+    （除非又产生了新的错误）。
+
+    删除来源需要访问 memory，因此继承 ContextStrategy（apply 能拿到 memory），
+    而非只接收 items 的 ItemStrategy。仅用作 pipeline 的起始/唯一策略。
+    """
+
+    def apply(self, memory: ShortTermMemory, field: memory_field, state: dict) -> list[ContextItem]:
+        items: list[ContextItem] = []
+        consumed_keys = list(memory.keys_by_field(field))
+        for key in consumed_keys:
+            for i in range(memory.count(field, key)):
+                raw = memory.get(field, key, i + 1)
+                if raw:
+                    items.append(ContextItem(
+                        source=f"{key}#{i+1}",
+                        content=raw,
+                        metadata={"field": field, "name": key, "call_index": i + 1},
+                    ))
+        # 注入后立即删除来源，保证下一轮不再出现
+        for key in consumed_keys:
+            memory.delete_key(field, key)
+        return items
+
+
 # 中间策略
 class TokenBudgetStrategy(ItemStrategy):
     """超出 token 上限时从最旧的 item 开始丢弃。"""

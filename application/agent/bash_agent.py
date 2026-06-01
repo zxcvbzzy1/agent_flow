@@ -2,7 +2,7 @@ import os
 
 from domain.agent_base import AgentBase
 from domain.context.context import ContextEngine
-from domain.context.providers import AvailableToolsProvider, HistoryProvider, StateProvider, ToolOutputProvider, UserPromptProvider
+from domain.context.providers import AvailableToolsProvider, ErrorProvider, HistoryProvider, StateProvider, ToolOutputProvider, UserPromptProvider
 from domain.context.strategy import FullHistoryStrategy, RecencyStrategy
 from domain.memory.short.default_short_term_memory import DefaultShortTermMemory
 from infra.LLM.LLM_infra import LLM_Client, LLM_Model_Provider
@@ -51,11 +51,12 @@ class OperatorExecutor(AgentBase):
 """
     
 # CLI agent上下文管理
-operator_memory = DefaultShortTermMemory(["tool_respond", "agent_history"])
+operator_memory = DefaultShortTermMemory(["tool_respond", "agent_history", "error"])
 operator_context = ContextEngine(
     providers=[
         UserPromptProvider(),
         StateProvider(),
+        ErrorProvider(operator_memory),
         AvailableToolsProvider(["system"]),
         HistoryProvider(operator_memory, "agent_history", FullHistoryStrategy()),
         ToolOutputProvider(operator_memory, "tool_respond", FullHistoryStrategy() | RecencyStrategy(5)),

@@ -13,6 +13,7 @@ from domain.agent.plan.providers import (
 from domain.context.context import ContextEngine
 from domain.context.providers import (
     AvailableToolsProvider,
+    ErrorProvider,
     HistoryProvider,
     MemoryProvider,
     PinnedContextProvider,
@@ -57,6 +58,7 @@ class ContextService:
             "providers": [
                 {"provider_id": "user_prompt", "name": "用户需求", "params": []},
                 {"provider_id": "state", "name": "执行状态", "params": []},
+                {"provider_id": "error", "name": "错误回灌(一次性)", "params": ["memory_field"]},
                 {"provider_id": "pinned_context", "name": "固定上下文(收藏)", "params": []},
                 {"provider_id": "available_tools", "name": "可用工具", "params": ["available_fields", "available_tools"]},
                 {"provider_id": "history", "name": "对话历史", "params": ["memory_field", "strategy_config"]},
@@ -88,6 +90,7 @@ class ContextService:
                 {"provider_id": "user_prompt", "enabled": True, "params": {}},
                 {"provider_id": "pinned_context", "enabled": True, "params": {}},
                 {"provider_id": "state", "enabled": True, "params": {}},
+                {"provider_id": "error", "enabled": True, "params": {}},
                 {"provider_id": "available_tools", "enabled": True, "params": {"available_fields": self.DEFAULT_FIELDS}},
                 {
                     "provider_id": "history",
@@ -104,6 +107,7 @@ class ContextService:
                 {"provider_id": "user_prompt", "enabled": True, "params": {}},
                 {"provider_id": "pinned_context", "enabled": True, "params": {}},
                 {"provider_id": "state", "enabled": True, "params": {}},
+                {"provider_id": "error", "enabled": True, "params": {}},
                 {"provider_id": "available_executors", "enabled": True, "params": {}},
                 {"provider_id": "executor_status", "enabled": True, "params": {}},
                 {"provider_id": "plan_observations", "enabled": True, "params": {}},
@@ -214,7 +218,7 @@ class ContextService:
         return {"deleted": True, "context_id": context_id, "stats": stats}
 
     def _build_engine(self, record: dict[str, Any]) -> ContextEngine:
-        memory = DefaultShortTermMemory(["tool_respond", "agent_history"])
+        memory = DefaultShortTermMemory(["tool_respond", "agent_history", "error"])
         providers = [
             provider
             for provider in (
@@ -229,6 +233,9 @@ class ContextService:
         # state 中没有 pinned_context 时该 provider 输出为空，无副作用。
         if not any(isinstance(provider, PinnedContextProvider) for provider in providers):
             providers.append(PinnedContextProvider())
+        # 错误回灌同样对所有 context 生效：解析失败时下一轮注入一次提醒，无错误时输出为空。
+        if not any(isinstance(provider, ErrorProvider) for provider in providers):
+            providers.append(ErrorProvider(memory))
         return ContextEngine(providers=providers, memory=memory)
 
     def _build_provider(
@@ -247,6 +254,9 @@ class ContextService:
             return StateProvider()
         if provider_id == "pinned_context":
             return PinnedContextProvider()
+        if provider_id == "error":
+            # 一次性错误回灌，固定使用 ConsumeOnceStrategy，不暴露 strategy 配置。
+            return ErrorProvider(memory, params.get("memory_field", "error"))
         if provider_id == "available_tools":
             available_tools = params.get("available_tools") or []
             available_fields = params.get("available_fields")
@@ -285,6 +295,10 @@ class ContextService:
             provider_id = "state"
         elif isinstance(provider, PinnedContextProvider):
             provider_id = "pinned_context"
+        elif isinstance(provider, ErrorProvider):
+            # ErrorProvider 是 MemoryProvider，但策略固定（ConsumeOnce），只回填 memory_field。
+            provider_id = "error"
+            params["memory_field"] = getattr(provider, "_field", "error")
         elif isinstance(provider, AvailableToolsProvider):
             provider_id = "available_tools"
             params["available_fields"] = list(getattr(provider, "_fields", self.DEFAULT_FIELDS))

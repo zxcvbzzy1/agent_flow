@@ -11,7 +11,7 @@ Provider 只格式化，不做任何存储或管理决策。
 from __future__ import annotations
 from abc import ABC, abstractmethod
 
-from domain.context.strategy import ContextStrategy, FullHistoryStrategy,ContextItem
+from domain.context.strategy import ContextStrategy, FullHistoryStrategy, ConsumeOnceStrategy, ContextItem
 from domain.memory.short.default_short_term_memory import ShortTermMemory
 from domain.memory.short.short_term_memory import memory_field
 import json
@@ -156,5 +156,30 @@ class HistoryProvider(MemoryProvider):
         parts = ["## 对话历史"]
         parts += [item.content for item in items]
         return ["\n".join(parts)]
+
+
+class ErrorProvider(MemoryProvider):
+    """错误回灌：注入上一轮解析失败/不合规输出等错误信息，提醒模型纠正。
+
+    默认使用 ConsumeOnceStrategy —— 错误只注入一次，注入后即从 memory 删除，
+    因此下一轮不再出现（除非又产生了新错误）。无错误时输出为空，无副作用。
+    """
+    name = "error"
+
+    def __init__(
+        self,
+        memory:   ShortTermMemory,
+        field:    memory_field = "error",
+        strategy: ContextStrategy | None = None,
+    ) -> None:
+        super().__init__(memory, field, strategy or ConsumeOnceStrategy())
+
+    def get(self, state: dict) -> list[str]:
+        items = self._get_items(state)
+        if not items:
+            return []
+        parts = ["## 上一轮错误（请修正后重试，本提示仅出现一次）"]
+        parts += [item.content for item in items]
+        return ["\n\n".join(parts)]
 
 

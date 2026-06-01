@@ -6,6 +6,7 @@ from typing import Literal
 memory_field = Literal[
     "tool_respond",
     "agent_history",
+    "error",
 ]
 
 
@@ -40,3 +41,8 @@ class ShortTermMemory(ABC):
 
     @abstractmethod
     def clear_field(self, field: memory_field) -> None: ...
+
+    @abstractmethod
+    def delete_key(self, field: memory_field, key: str) -> None:
+        """删除某 field 下指定 key 的全部条目（用于一次性消费）。"""
+        ...
