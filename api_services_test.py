@@ -151,6 +151,7 @@ def test_tools_api_lists_builtin_and_uploaded_tool():
 
     tools = client.get("/api/tools").json()["items"]
     assert any(item["name"] == "bash" for item in tools)
+    assert any(item["name"] == "inline_artifact" for item in tools)
 
     response = client.post(
         "/api/tools/upload",
@@ -652,6 +653,112 @@ def test_frontend_bridge_mirrors_tool_events_to_run_stream():
 
     assert [event["name"] for event in events[-2:]] == ["tool.called", "tool.failed"]
     assert events[-1]["payload"]["respond"] == "no"
+
+
+def test_frontend_bridge_mirrors_artifacts_event_to_run_stream():
+    container = get_container()
+    run_id = "artifact-bridge-test-run"
+
+    container.frontend_bridge.register_agent_run("artifact_agent", run_id)
+    container.frontend_bridge.mirror_tool_event(
+        Event(
+            name="artifacts.document",
+            payload={
+                "agent_id": "artifact_agent",
+                "artifact_type": "document",
+                "artifact": {
+                    "type": "document",
+                    "title": "Preview",
+                    "content": "# hello",
+                    "editable": True,
+                },
+                "created_at": 123.0,
+            },
+        )
+    )
+
+    events = container.events.list_events(run_id)
+
+    assert events[-1]["name"] == "artifacts.document"
+    assert events[-1]["payload"]["frontend_event_name"] == "artifacts.document"
+    assert events[-1]["payload"]["artifact_type"] == "document"
+    assert events[-1]["payload"]["artifact"]["title"] == "Preview"
+
+
+def test_inline_artifact_tool_builds_defaults_and_validates():
+    from infra.tool.builtin.artifacts import InlineArtifactTool
+
+    payload = InlineArtifactTool().build_event_payload(
+        {
+            "agent_id": "artifact_agent",
+            "artifact_type": "document",
+            "document": {
+                "title": "Doc",
+                "content": "# doc",
+                "format": "md",
+            },
+        }
+    )
+
+    assert payload["event_name"] == "artifacts.document"
+    assert payload["artifact_type"] == "document"
+    assert payload["artifact"]["type"] == "document"
+    assert payload["artifact"]["editable"] is True
+    assert payload["artifact"]["mime_type"] == "text/markdown"
+    assert payload["artifact"]["language"] == "markdown"
+
+    image_payload = InlineArtifactTool().build_event_payload(
+        {
+            "artifact_type": "image",
+            "image": {"url": "https://example.test/image.png"},
+        }
+    )
+    assert image_payload["artifact"]["editable"] is False
+    assert image_payload["artifact"]["url"] == "https://example.test/image.png"
+
+    with pytest.raises(ValueError, match="artifact_type"):
+        InlineArtifactTool().build_event_payload(
+            {"artifact_type": "unknown"}
+        )
+
+    with pytest.raises(ValueError, match="document"):
+        InlineArtifactTool().build_event_payload(
+            {"artifact_type": "document"}
+        )
+
+
+@pytest.mark.asyncio
+async def test_inline_artifact_tool_called_event_publishes_artifact_sse():
+    from infra.config import bus, factory
+
+    container = get_container()
+    run_id = "artifact-tool-test-run"
+    agent_id = "artifact_tool_agent"
+    container.frontend_bridge.register_agent_run(agent_id, run_id)
+
+    await bus.publish(
+        factory.tool("inline_artifact").called(
+            {
+                "agent_id": agent_id,
+                "artifact_type": "document",
+                "document": {
+                    "title": "Inline Doc",
+                    "content": "# inline",
+                    "format": "md",
+                },
+            }
+        )
+    )
+
+    events = container.events.list_events(run_id)
+    event_names = [event["name"] for event in events]
+
+    assert "tool.called" in event_names
+    assert "artifacts.document" in event_names
+    assert "tool.succeeded" in event_names
+    artifact_event = next(event for event in events if event["name"] == "artifacts.document")
+    assert artifact_event["payload"]["artifact"]["title"] == "Inline Doc"
+    assert artifact_event["payload"]["artifact"]["editable"] is True
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from domain.agent.plan.planAgent import PlanAgent
@@ -59,11 +60,13 @@ class AgentFactoryService:
         context_service: ContextService,
         llm_client: LLM_Client,
         events: EventStreamService | None = None,
+        external_executor_builder: Callable[[dict[str, Any]], AgentBase] | None = None,
     ) -> None:
         self._store = store
         self._contexts = context_service
         self._llm = llm_client
         self._events = events
+        self._external_executor_builder = external_executor_builder
         self._agents: dict[str, AgentBase | PlanAgent] = {}
         self.ensure_default_agents()
 
@@ -227,6 +230,10 @@ class AgentFactoryService:
                 llm=llm,
                 context=context,
             )
+        elif (record.get("metadata") or {}).get("agent_kind") in {"claude_code", "codex"}:
+            if self._external_executor_builder is None:
+                raise ValueError("缺少第三方 executor builder")
+            agent = self._external_executor_builder(record)
         else:
             agent = APIExecutorAgent(
                 id=record["agent_id"],
