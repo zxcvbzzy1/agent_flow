@@ -86,20 +86,44 @@ class StateProvider(ContextProvider):
 class AvailableToolsProvider(ContextProvider):
     name = "available_tools"
 
-    def __init__(self, available_fields: list[str]) -> None:
-        self._fields = available_fields
+    def __init__(
+        self,
+        available_fields: list[str] | None = None,
+        available_tools: list[str] | None = None,
+    ) -> None:
+        # 按 field 分组粗选，或按具体工具名细选；二者取并集。
+        self._fields = list(available_fields or [])
+        self._tools = list(available_tools or [])
 
     def get(self, state: dict) -> list[str]:
 
         lines = ["当前可用工具："]
         for tool in Tool.get_all_tools():
-            if tool.field in self._fields:
+            if tool.field in self._fields or tool.name in self._tools:
                 lines.append(
                     tool.name + "\n"
                     + tool.description + "\n"
                     + json.dumps(tool.input_schema, ensure_ascii=False) + "\n"
                 )
         return ["\n".join(lines)] if len(lines) > 1 else []
+
+
+class PinnedContextProvider(ContextProvider):
+    """用户收藏的关键信息，作为长期固定上下文注入。
+
+    数据来自 state["pinned_context"]（list[str]），由应用层在每次运行前写入。
+    与历史/工具反馈不同，这里是"固定写入"，不参与裁剪/摘要策略。
+    """
+    name = "pinned_context"
+
+    def get(self, state: dict) -> list[str]:
+        items = state.get("pinned_context") or []
+        cleaned = [str(item).strip() for item in items if str(item).strip()]
+        if not cleaned:
+            return []
+        parts = ["## 固定上下文（用户收藏，长期有效）"]
+        parts += [f"- {item}" for item in cleaned]
+        return ["\n".join(parts)]
 
 
 

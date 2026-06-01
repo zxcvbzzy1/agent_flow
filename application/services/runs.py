@@ -120,6 +120,7 @@ class RunOrchestrationService:
         conversation_id: str | None = None,
         message_id: str | None = None,
         auto_start: bool = True,
+        pinned_context: list[str] | None = None,
     ) -> dict[str, Any]:
         run_id = str(uuid.uuid4())
         if mode not in {"react", "plan"}:
@@ -153,6 +154,7 @@ class RunOrchestrationService:
             "max_replan_rounds": max_replan_rounds,
             "conversation_id": conversation_id,
             "message_id": message_id,
+            "pinned_context": pinned_context or [],
             "status": "pending",
             "plan": {},
             "final": "",
@@ -238,6 +240,7 @@ class RunOrchestrationService:
 
         self._frontend_bridge.register_agent_run(executor.id, run_id)
         self._load_conversation_history(executor, record)
+        self._apply_pinned_context(executor, record)
         self._streams.publish(
             run_id,
             "workflow.started",
@@ -270,6 +273,7 @@ class RunOrchestrationService:
             raise TypeError("planner_agent_id 必须指向 planner agent")
         self._frontend_bridge.register_agent_run(planner.id, run_id)
         self._load_conversation_history(planner, record)
+        self._apply_pinned_context(planner, record)
 
         executors: dict[str, AgentBase] = {}
         for executor_id in record["executor_agent_ids"]:
@@ -277,6 +281,7 @@ class RunOrchestrationService:
             if not isinstance(executor, AgentBase):
                 raise TypeError(f"executor_agent_id 不是执行型 agent: {executor_id}")
             self._frontend_bridge.register_agent_run(executor.id, run_id)
+            self._apply_pinned_context(executor, record)
             executors[executor_id] = executor
 
         step_context = self._contexts.get_engine(record["context_id"])
@@ -306,6 +311,18 @@ class RunOrchestrationService:
             },
         )
         self._write_conversation_assistant_message(record=record, final=orchestrator.state.final)
+
+    def _apply_pinned_context(self, agent: AgentBase, record: dict[str, Any]) -> None:
+        """把 run 携带的固定上下文（收藏）写入 agent state，供 PinnedContextProvider 读取。
+
+        注意：agent 实例由 AgentFactoryService 缓存为单例，其 states 在并发 run 间共享。
+        这与既有的 _load_conversation_history（同样在共享实例上重写 agent_history）一致：
+        同一 executor 同时参与多个 run 时，per-run 状态会相互覆盖。pinned_context 沿用此既有约束，
+        不引入新的并发模型；若未来需要严格隔离，应改为按 run 构造独立 agent/state 或按 executor 串行化 run。
+        """
+        states = getattr(agent, "states", None)
+        if isinstance(states, dict):
+            states["pinned_context"] = list(record.get("pinned_context") or [])
 
     def _load_conversation_history(self, agent: AgentBase, record: dict[str, Any]) -> None:
         conversation_id = record.get("conversation_id")
