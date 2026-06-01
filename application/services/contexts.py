@@ -15,6 +15,7 @@ from domain.context.providers import (
     AvailableToolsProvider,
     HistoryProvider,
     MemoryProvider,
+    PinnedContextProvider,
     StateProvider,
     ToolOutputProvider,
     UserPromptProvider,
@@ -56,7 +57,8 @@ class ContextService:
             "providers": [
                 {"provider_id": "user_prompt", "name": "用户需求", "params": []},
                 {"provider_id": "state", "name": "执行状态", "params": []},
-                {"provider_id": "available_tools", "name": "可用工具", "params": ["available_fields"]},
+                {"provider_id": "pinned_context", "name": "固定上下文(收藏)", "params": []},
+                {"provider_id": "available_tools", "name": "可用工具", "params": ["available_fields", "available_tools"]},
                 {"provider_id": "history", "name": "对话历史", "params": ["memory_field", "strategy_config"]},
                 {"provider_id": "tool_output", "name": "工具反馈", "params": ["memory_field", "strategy_config"]},
                 {"provider_id": "available_executors", "name": "可用执行者", "params": []},
@@ -84,6 +86,7 @@ class ContextService:
         templates = {
             "executor": [
                 {"provider_id": "user_prompt", "enabled": True, "params": {}},
+                {"provider_id": "pinned_context", "enabled": True, "params": {}},
                 {"provider_id": "state", "enabled": True, "params": {}},
                 {"provider_id": "available_tools", "enabled": True, "params": {"available_fields": self.DEFAULT_FIELDS}},
                 {
@@ -99,6 +102,7 @@ class ContextService:
             ],
             "planner": [
                 {"provider_id": "user_prompt", "enabled": True, "params": {}},
+                {"provider_id": "pinned_context", "enabled": True, "params": {}},
                 {"provider_id": "state", "enabled": True, "params": {}},
                 {"provider_id": "available_executors", "enabled": True, "params": {}},
                 {"provider_id": "executor_status", "enabled": True, "params": {}},
@@ -221,6 +225,10 @@ class ContextService:
         ]
         if not providers:
             raise ValueError("至少需要一个启用的 provider")
+        # 固定上下文（收藏）注入对所有 context 生效，即使旧配置未声明也自动补一个；
+        # state 中没有 pinned_context 时该 provider 输出为空，无副作用。
+        if not any(isinstance(provider, PinnedContextProvider) for provider in providers):
+            providers.append(PinnedContextProvider())
         return ContextEngine(providers=providers, memory=memory)
 
     def _build_provider(
@@ -237,8 +245,14 @@ class ContextService:
             return UserPromptProvider()
         if provider_id == "state":
             return StateProvider()
+        if provider_id == "pinned_context":
+            return PinnedContextProvider()
         if provider_id == "available_tools":
-            return AvailableToolsProvider(params.get("available_fields") or self.DEFAULT_FIELDS)
+            available_tools = params.get("available_tools") or []
+            available_fields = params.get("available_fields")
+            if available_fields is None and not available_tools:
+                available_fields = self.DEFAULT_FIELDS
+            return AvailableToolsProvider(available_fields or [], available_tools)
         if provider_id == "history":
             return HistoryProvider(
                 memory,
@@ -269,9 +283,12 @@ class ContextService:
             provider_id = "user_prompt"
         elif isinstance(provider, StateProvider):
             provider_id = "state"
+        elif isinstance(provider, PinnedContextProvider):
+            provider_id = "pinned_context"
         elif isinstance(provider, AvailableToolsProvider):
             provider_id = "available_tools"
             params["available_fields"] = list(getattr(provider, "_fields", self.DEFAULT_FIELDS))
+            params["available_tools"] = list(getattr(provider, "_tools", []))
         elif isinstance(provider, HistoryProvider):
             provider_id = "history"
             params = self._memory_provider_params(provider)
