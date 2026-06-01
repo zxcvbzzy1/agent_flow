@@ -501,12 +501,13 @@ data: {"event_id":"...","run_id":"...","name":"workflow.started","payload":{}}
 - `tool.succeeded`
 - `tool.failed`
 - `tool.retrying`
+- `artifacts.*`
 - `agent.failed`
 - `plan.step.failed`
 - `human.confirmation.requested`
 - `human.confirmation.resolved`
 
-`tool.*`、`agent.failed`、`plan.step.failed` 来自内部 `infra.eventbus` 到前端 SSE 的应用层桥接。它们只用于前端观察，不改变内部工具执行流程。
+`tool.*`、`artifacts.*`、`agent.failed`、`plan.step.failed` 来自内部 `infra.eventbus` 到前端 SSE 的应用层桥接。它们只用于前端观察，不改变内部工具执行流程。
 
 用户中断 run 时也会发送 `workflow.failed`，通过 `payload.cancelled === true` 区分普通失败。
 
