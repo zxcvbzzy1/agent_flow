@@ -15,8 +15,14 @@ from application.services.llm_streaming import StreamingObservableLLMClient
 
 
 class APIExecutorAgent(AgentBase):
-    def __init__(self, *args, role_prompt: str = "", **kwargs) -> None:
+    def __init__(self, *args, role_prompt: str = "", work_path: str='/Users/zxcvbzzy1/Desktop/项目/agent_full_stack/agent_flow/temp', **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.work_path = work_path
         self._role_prompt = role_prompt + f"""
+## 工作目录
+        
+当前工作目录为：{self.work_path},请在此目录里创建文件
+
 ## 目标
 根据用户需求，自主决定调用组合合适的工具完成任务。
 
@@ -43,7 +49,7 @@ class APIExecutorAgent(AgentBase):
   "final": "最终结果(string)"
 }}     
 """
-        super().__init__(*args, **kwargs)
+        
 
     def _build_agent_prompt(self) -> str:
         if self._role_prompt:
@@ -241,16 +247,13 @@ class AgentFactoryService:
                 llm=llm,
                 context=context,
                 role_prompt=record.get("role_prompt", ""),
+                work_path=(record.get("metadata") or {}).get("workdir", ""),
             )
 
         metadata = record.get("metadata") or {}
         description = metadata.get("description")
         if description:
             agent.inject_attribute(description=description)
-        # 用户为 native agent 选择的工作目录覆盖 AgentBase 默认 work_path。
-        workdir = metadata.get("workdir")
-        if workdir:
-            agent.inject_attribute(work_path=workdir)
         return agent
 
     def _build_llm(self, record: dict[str, Any]):
