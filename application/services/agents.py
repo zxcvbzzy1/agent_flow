@@ -40,7 +40,7 @@ class APIExecutorAgent(AgentBase):
   "tool_calls": [],
   "is_finished": true,
   "finish_reason": "完成原因",
-  "final": "最终结果"
+  "final": "最终结果(string)"
 }}     
 """
         super().__init__(*args, **kwargs)
@@ -243,9 +243,14 @@ class AgentFactoryService:
                 role_prompt=record.get("role_prompt", ""),
             )
 
-        description = (record.get("metadata") or {}).get("description")
+        metadata = record.get("metadata") or {}
+        description = metadata.get("description")
         if description:
             agent.inject_attribute(description=description)
+        # 用户为 native agent 选择的工作目录覆盖 AgentBase 默认 work_path。
+        workdir = metadata.get("workdir")
+        if workdir:
+            agent.inject_attribute(work_path=workdir)
         return agent
 
     def _build_llm(self, record: dict[str, Any]):

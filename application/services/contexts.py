@@ -84,7 +84,7 @@ class ContextService:
         }
 
     def default_template(self, kind: str) -> list[dict[str, Any]]:
-        memory_strategy = {"pipeline": [{"type": "full_history"}, {"type": "recency", "keep_last": 10}]}
+        memory_strategy = {"pipeline": [{"type": "full_history"}, {"type": "recency", "keep_last": 30}]}
         templates = {
             "executor": [
                 {"provider_id": "user_prompt", "enabled": True, "params": {}},
