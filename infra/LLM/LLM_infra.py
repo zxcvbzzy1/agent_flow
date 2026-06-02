@@ -63,9 +63,9 @@ class LLM_Client:
             max_tokens=self.max_tokens,
             stream=True,
             extra_body={"reasoning_split": True},
-            response_format={
-                'type': 'json_object'
-            }
+            # response_format={
+            #     'type': 'json_object'
+            # }
         )
 
         async for chunk in stream:
