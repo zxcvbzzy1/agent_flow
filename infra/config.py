@@ -20,10 +20,10 @@ agent_dict = AgentBase.get_instance_dict()
 factory = ToolEventFactory(prefix="infra")._build()._resigister_bus(bus)
 # 默认工具使用模型
 llm_client = LLM_Client(
-    url=os.getenv("LLM_BASE_URL", "https://api.minimaxi.com/v1"),
-    # model_class="glm-5.1",
-    model_class="MiniMax-M2.7",
-    model_provider=LLM_Model_Provider.MINMAX,
+    url=os.getenv("LLM_BASE_URL", "https://api.deepseek.com"),
+    model_class="deepseek-v4-flash",
+    # model_class="MiniMax-M2.7",
+    model_provider=LLM_Model_Provider.DEEPSEEK,
     max_tokens=131072,
 )
 
