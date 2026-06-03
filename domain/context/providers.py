@@ -126,6 +126,56 @@ class PinnedContextProvider(ContextProvider):
         return ["\n".join(parts)]
 
 
+# 内联产物协议：coding agent（Claude Code / Codex）无法直接调用 inline_artifact 工具，
+# 只能在正文里输出标记块，由 im_backend 侧解析成产物事件。这里只注入“协议说明文本”，
+# 解析逻辑（ArtifactStreamParser）留在 im_backend。常量放在 agent_flow，使 ContextService
+# 能按 provider_id="artifact_protocol" 构建该 provider，而无需反向依赖 im_backend。
+ARTIFACT_BEGIN = "@@ARTIFACT_BEGIN@@"
+ARTIFACT_END = "@@ARTIFACT_END@@"
+
+ARTIFACT_PROTOCOL_INSTRUCTION = (
+    "## 内联产物协议\n"
+    "当你需要向用户展示一个“产物”（代码改动对比、可预览文档/文件、图片、网页预览，"
+    "或一条结构化消息）时，在正文中单独输出一个产物标记块。系统会捕获该标记块、"
+    "渲染成内联卡片，并自动把标记本身从展示文本里移除。\n\n"
+    "重要：你不能直接调用 agent_flow 的 inline_artifact 工具；Claude Code / Codex 的"
+    "shell 命令、文件读取、command_execution 输出也不会自动变成产物。若要让前端出现"
+    "产物卡片，必须由你在最终回复文本中原样输出下面的标记块。\n\n"
+    "标记块格式（起止标记各占一行，中间是一个合法 JSON 对象）：\n\n"
+    f"{ARTIFACT_BEGIN}\n"
+    '{"artifact_type": "<类型>", "<类型>": { ...该类型字段... }}\n'
+    f"{ARTIFACT_END}\n\n"
+    "artifact_type 取值与对应字段：\n"
+    '- message  普通消息：{"title","content","mime_type"?,"metadata"?}\n'
+    '- image    图片：{"title","url","alt"?,"mime_type"?,"metadata"?}\n'
+    '- diff     代码改动对比：{"title","before","after","file_path"?,"language"?,"metadata"?}\n'
+    '- document 可预览文档/文件：{"title","content","format"?(md/py/js/json/txt...),"language"?,"editable"?,"metadata"?}\n'
+    '- web      网页预览：{"title","url"?,"html"?,"preview_title"?,"metadata"?}\n\n'
+    "规则：\n"
+    "- JSON 必须合法、可一次性解析；顶层只放 artifact_type 与同名的类型对象；"
+    "content/before/after/html 内的换行必须写成 JSON 字符串里的 \\n 转义，不能放未转义的真实换行。\n"
+    "- 一次只放一个产物；要展示多个产物就输出多个标记块。\n"
+    "- 用户要求展示、预览、生成、创建、打开某个文件内容时，读取/生成内容后必须输出 "
+    "document 产物标记块；title 使用文件名或简短标题，content 放完整可展示内容，"
+    "format/language 按文件扩展名填写，editable 通常设为 true。\n"
+    "- 用户要求展示代码修改前后对比时，必须输出 diff 产物标记块。\n"
+    "- 不要把 shell 命令输出当作已经完成产物展示；命令只用于获取内容，产物展示必须靠标记块。\n"
+    "- 仅在确有产物要展示时使用；普通解释照常直接输出，不要包进标记。\n"
+    "- 标记块之外的正文会照常流式展示给用户。\n"
+)
+
+
+class ArtifactProtocolProvider(ContextProvider):
+    """把内联产物协议说明注入 coding agent 的上下文。
+
+    只注入说明文本——产物事件由 executor 侧解析标记后发出。
+    """
+
+    name = "artifact_protocol"
+
+    def get(self, state: dict) -> list[str]:
+        return [ARTIFACT_PROTOCOL_INSTRUCTION]
+
 
 # 动态provider
 
