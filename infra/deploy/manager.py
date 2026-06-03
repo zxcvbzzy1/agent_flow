@@ -434,6 +434,8 @@ def build_deploy_artifact(deployment: Deployment) -> dict[str, Any]:
         "error": deployment.error or "",
         "metadata": {},
         "editable": False,
+        "download_dir": deployment.workdir,
+        "downloadable": True,
     }
 
 

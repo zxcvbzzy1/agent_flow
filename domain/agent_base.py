@@ -2,13 +2,12 @@ from abc import ABC, abstractmethod
 import asyncio
 from dataclasses import dataclass, field
 import json
-import re
 from typing import Any
 from domain.context.context import ContextEngine
 from domain.event import ToolEventFactory
 from domain.state import Agent_state
 from domain.tool import Tool
-
+from domain.json_parse import robust_json_load
 
 @dataclass
 class ToolCall:
@@ -277,20 +276,11 @@ class AgentBase(ABC):
     # ── 决策解析 ──────────────────────────────────────────────────
 
     def _parse_decision(self, raw: str) -> AgentDecision:
-        text = raw.strip()
-
-        match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-        if match:
-            text = match.group(1).strip()
-
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError as e:
-            self._record_parse_error(raw, f"非合规 JSON：{e}")
-            return AgentDecision(tool_calls=[], think=raw)
-
+        # 鲁棒解析：先直接解析原文（其字符串值可能内嵌 ```json 代码块），
+        # 再按需剥最外层围栏 / json_repair 兜底。见 domain.json_parse。
+        data = robust_json_load(raw)
         if not isinstance(data, dict):
-            self._record_parse_error(raw, "顶层不是 JSON 对象")
+            self._record_parse_error(raw, "非合规 JSON：无法解析或恢复为对象")
             return AgentDecision(tool_calls=[], think=raw)
 
         try:

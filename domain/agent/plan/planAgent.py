@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from domain.agent_base import AgentBase
 from domain.context.context import ContextEngine
+from domain.json_parse import robust_json_load
 from domain.state import Plan
 
 
@@ -87,11 +87,12 @@ class PlanAgent(AgentBase):
 
 
     def _parse_json(self, raw: str) -> dict[str, Any]:
-        text = raw.strip()
-        match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-        if match:
-            text = match.group(1).strip()
-        return json.loads(text)
+        # 鲁棒解析：先直接解析原文，避免把字符串内嵌的 ```json 代码块误当成外层围栏。
+        data = robust_json_load(raw)
+        if isinstance(data, dict):
+            return data
+        # 无法恢复时保持原契约：抛 JSONDecodeError 交由上层兜底
+        return json.loads(raw.strip())
 
     def _build_plan_prompt(self, executor_ids: list[str]) -> str:
         executor_names = ", ".join(executor_ids)

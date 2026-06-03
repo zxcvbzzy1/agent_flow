@@ -25,6 +25,7 @@ class ToolRegistryService:
         import infra.tool.builtin.system  # noqa: F401
         import infra.tool.builtin.artifacts  # noqa: F401
         import infra.tool.builtin.deploy  # noqa: F401
+        import infra.tool.builtin.file_tools  # noqa: F401
         import infra.tool.tools_attach_methods  # noqa: F401
 
     def list_tools(self) -> list[dict[str, Any]]:

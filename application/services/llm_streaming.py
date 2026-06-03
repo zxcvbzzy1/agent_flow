@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
-import re
 from typing import Any
 
 from domain.runtime_hooks import get_run_context_provider
+from domain.json_parse import robust_json_load
 from application.services.events import EventStreamService
 
 
@@ -196,11 +195,5 @@ class StreamingObservableLLMClient:
         return "unknown"
 
     def _parse_json(self, raw: str) -> dict[str, Any] | None:
-        text = raw.strip()
-        match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-        if match:
-            text = match.group(1).strip()
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return None
+        # 鲁棒解析：先直接解析原文，避免把字符串内嵌的 ```json 代码块误当成外层围栏。
+        return robust_json_load(raw)
