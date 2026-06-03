@@ -164,6 +164,15 @@ class AgentBase(ABC):
         respond:   str,
     ) -> None:
         s = self.states
+        # 工具成功但 respond 为空时，模型下一轮在 tool_respond 里看不到任何结果，
+        # 会误判“调用没生效”而重复调用同一工具，形成死循环（典型如 bash 执行无 stdout 的命令）。
+        # 这里把空 respond 兜底为明确的非空提示，保证工具反馈始终对模型可见，从根上消除空负载导致的循环。
+        if respond is None or (isinstance(respond, str) and not respond.strip()):
+            respond = (
+                f"（工具 {tool_name} 执行成功，无返回内容）"
+                if success
+                else f"（工具 {tool_name} 执行失败，无错误信息）"
+            )
         if success:
             try:
                 memory = self.context_engine.get_memory()

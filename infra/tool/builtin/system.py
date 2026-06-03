@@ -292,11 +292,14 @@ def exec_bash(**kwargs)->Event:
             )
         return factory.tool("bash").failed(tool_respond)
     else:
+        # 成功但无 stdout 的命令（mkdir/touch/写文件/cd 等）若回传空字符串，模型看不到结果会重复调用，
+        # 这里兜底成明确的成功提示，保证 tool.succeeded 负载非空。
+        stdout = respond.get("stdout") or ""
         tool_respond = Tool_respond(
                 agent_id=agent_id,
                 name="bash",
                 success=True,
-                respond=respond["stdout"]
+                respond=stdout if stdout.strip() else "命令执行成功，无标准输出（returncode=0）"
             )
         return factory.tool("bash").succeeded(tool_respond)
 

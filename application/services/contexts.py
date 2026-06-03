@@ -107,11 +107,11 @@ class ContextService:
                 },
             ],
             "planner": [
-                {"provider_id": "user_prompt", "enabled": True, "params": {}},
                 {"provider_id": "pinned_context", "enabled": True, "params": {}},
                 {"provider_id": "state", "enabled": True, "params": {}},
-                {"provider_id": "error", "enabled": True, "params": {}},
                 {"provider_id": "available_executors", "enabled": True, "params": {}},
+                {"provider_id": "user_prompt", "enabled": True, "params": {}},
+                {"provider_id": "error", "enabled": True, "params": {}},
                 {"provider_id": "executor_status", "enabled": True, "params": {}},
                 {"provider_id": "plan_observations", "enabled": True, "params": {}},
                 {
@@ -140,7 +140,7 @@ class ContextService:
                     "enabled": True,
                     "params": {
                         "memory_field": "agent_history",
-                        "strategy_config": {"pipeline": [{"type": "full_history"}, {"type": "recency", "keep_last": 15}]},
+                        "strategy_config": {"pipeline": [{"type": "full_history"}, {"type": "recency", "keep_last": 35}]},
                     },
                 },
             ],
