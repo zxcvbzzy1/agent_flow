@@ -40,7 +40,7 @@ providers = [
     ErrorProvider(memory),
     AvailableToolsProvider(["system", "search", "memory", "write_agent"]),
     HistoryProvider(memory, "agent_history", FullHistoryStrategy()),
-    ToolOutputProvider(memory, "tool_respond", FullHistoryStrategy() | RecencyStrategy(10) | ChunkToFileStrategy("./mid",4000,4000)),
+    ReActToolFeedbackProvider(memory, "tool_respond", FullHistoryStrategy() | RecencyStrategy(10) | ChunkToFileStrategy("./mid",4000,4000)),
 ]
 
 # PlanAgent编排上下文提供类
@@ -52,7 +52,7 @@ plan_providers = [
     ExecutorStatusProvider(),
     PlanObservationProvider(),
     HistoryProvider(memory2, "agent_history", FullHistoryStrategy()),
-    ToolOutputProvider(memory2, "tool_respond", FullHistoryStrategy() | RecencyStrategy(10) | ChunkToFileStrategy("./mid",4000,4000)),
+    ReActToolFeedbackProvider(memory2, "tool_respond", FullHistoryStrategy() | RecencyStrategy(10) | ChunkToFileStrategy("./mid",4000,4000)),
 ]
 
 # ── 上下文管理类 ──────────────────────────────────────────────────

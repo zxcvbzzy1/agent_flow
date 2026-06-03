@@ -46,7 +46,7 @@ class ItemStrategy(ContextStrategy, ABC):
     def apply(self, memory: ShortTermMemory, field: memory_field, state: dict) -> list[ContextItem]:
         # 单独使用时从 memory 拿指定 field 的原文再变换
         items = [
-            ContextItem(source=f"{key}#{i+1}", content=raw, metadata={"field": field, "name": key})
+            ContextItem(source=f"{key}#{i+1}", content=raw, metadata={"field": field, "name": key, "tool_name": key})
             for key in memory.keys_by_field(field)
             for i, raw in enumerate(
                 [memory.get(field, key, j+1) for j in range(memory.count(field, key))]
@@ -103,7 +103,7 @@ class FullHistoryStrategy(ContextStrategy):
                     items.append(ContextItem(
                         source=f"{key}#{i+1}",
                         content=raw,
-                        metadata={"field": field, "name": key, "call_index": i + 1},
+                        metadata={"field": field, "name": key, "tool_name": key, "call_index": i + 1},
                     ))
         return items
 
@@ -119,7 +119,7 @@ class LatestOnlyStrategy(ContextStrategy):
                 items.append(ContextItem(
                     source=f"{key}#latest",
                     content=raw,
-                    metadata={"field": field, "name": key},
+                    metadata={"field": field, "name": key, "tool_name": key},
                 ))
         return items
 
@@ -147,7 +147,7 @@ class ConsumeOnceStrategy(ContextStrategy):
                     items.append(ContextItem(
                         source=f"{key}#{i+1}",
                         content=raw,
-                        metadata={"field": field, "name": key, "call_index": i + 1},
+                        metadata={"field": field, "name": key, "tool_name": key, "call_index": i + 1},
                     ))
         # 注入后立即删除来源，保证下一轮不再出现
         for key in consumed_keys:

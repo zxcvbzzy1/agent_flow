@@ -33,7 +33,11 @@ class ChunkToFileStrategy(ItemStrategy):
     def transform(self, items: list[ContextItem], state: dict) -> list[ContextItem]:
         result: list[ContextItem] = []
         for item in items:
-            if item.metadata["tool_name"] == "read_files":
+            # 健壮取值：早期 Strategy 只写 metadata["name"]，不写 "tool_name"，
+            # 之前硬下标 ["tool_name"] 一旦 tool_respond 有条目就 KeyError，
+            # 被 ContextEngine 吞掉后整个工具反馈 provider 输出为空 -> 模型看不到结果 -> 循环。
+            tool_name = item.metadata.get("tool_name") or item.metadata.get("name") or ""
+            if tool_name == "read_files":
                 result.append(item)
                 continue
             if item.tokens <= self._token_limit:

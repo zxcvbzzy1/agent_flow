@@ -79,6 +79,10 @@ class AgentBase(ABC):
         self.context_engine = context
         self._tool_done     = asyncio.Event()
         self._pending_tools = 0
+        # ReACT 透传：本轮决策的 think，以及每个工具按 tool_name 排队的本次调用上下文
+        # （reasoning + arguments）。reasoning 不进事件，走 agent-local 关联，避免改 tool/event。
+        self._round_think        = ""
+        self._pending_reasoning: dict[str, list[dict]] = {}
         AgentBase._instance_list[self.id] = self
 
     @classmethod
@@ -109,7 +113,7 @@ class AgentBase(ABC):
         decision = await self._think()
 
         if decision.tool_calls:
-            await self._execute_tools(decision.tool_calls)
+            await self._execute_tools(decision)
             return False
 
         if decision.is_finished:
@@ -142,8 +146,21 @@ class AgentBase(ABC):
 
     # ── 工具执行 ──────────────────────────────────────────────────
 
-    async def _execute_tools(self, tool_calls: list[ToolCall]) -> None:
-        """执行本轮所有工具，等待全部完成"""
+    async def _execute_tools(self, decision: AgentDecision) -> None:
+        """执行本轮所有工具，等待全部完成。
+
+        进入时记录本轮 think，并按 tool_name 重建 _pending_reasoning 队列，
+        使 on_tool_call 能把每次工具调用对应的 reasoning/arguments 与 observation
+        重新拼成完整的 ReACT 块（Thought→Action→Args→Observation）回灌上下文。
+        """
+        tool_calls = decision.tool_calls
+        self._round_think = decision.think or ""
+        self._pending_reasoning = {}
+        for tc in tool_calls:
+            self._pending_reasoning.setdefault(tc.tool_name, []).append(
+                {"reasoning": tc.reasoning, "arguments": tc.arguments}
+            )
+
         self._tool_done.clear()
         self._pending_tools = len(tool_calls)
         no_dep  = [tc for tc in tool_calls ]
@@ -173,10 +190,16 @@ class AgentBase(ABC):
                 if success
                 else f"（工具 {tool_name} 执行失败，无错误信息）"
             )
+
+        # 取出本次调用对应的 reasoning/arguments（FIFO 近似匹配同名工具同轮多次调用），
+        # 拼成完整 ReACT 块，使下一轮上下文里模型能看到自己当初的 Thought/Action，
+        # 而不只是孤立的 Observation —— 从根上消除“看不到自己调过”导致的循环。
+        block = self._build_react_block(tool_name, respond)
+
         if success:
             try:
                 memory = self.context_engine.get_memory()
-                memory.store("tool_respond", tool_name, respond)
+                memory.store("tool_respond", tool_name, block)
                 s["tool_history"].append(tool_name)
                 s["last_tool_ok"] = True
                 s["retry"]        = 0
@@ -186,13 +209,35 @@ class AgentBase(ABC):
             s["last_tool_ok"] = False
             s["retry"]       += 1
             memory = self.context_engine.get_memory()
-            memory.store("tool_respond", tool_name, respond)
+            memory.store("tool_respond", tool_name, block)
             s["tool_history"].append(tool_name)
 
 
         self._pending_tools -= 1
         if self._pending_tools <= 0:
             self._tool_done.set()
+
+    def _build_react_block(self, tool_name: str, respond: str) -> str:
+        """把本轮 think + 本次调用的 reasoning/arguments + observation 拼成 ReACT 块。
+
+        reasoning/arguments 从 self._pending_reasoning[tool_name] 按 FIFO pop(0) 取，
+        取不到（边界情况：事件乱序或同名工具计数不匹配）时降级为空，不影响 observation 可见。
+        """
+        pending = self._pending_reasoning.get(tool_name) or []
+        info = pending.pop(0) if pending else {}
+        reasoning = info.get("reasoning", "") or ""
+        arguments = info.get("arguments", {}) or {}
+        try:
+            args_text = json.dumps(arguments, ensure_ascii=False)
+        except (TypeError, ValueError):
+            args_text = str(arguments)
+        think = (self._round_think or "").strip()
+        return (
+            f"[Thought] {think}\n"
+            f"[Action] {tool_name}  | 理由: {reasoning}\n"
+            f"[Args] {args_text}\n"
+            f"[Observation] {respond}"
+        )
 
     # ── 系统指令（子类重写）───────────────────────────────────────
 

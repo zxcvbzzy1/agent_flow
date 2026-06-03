@@ -150,7 +150,12 @@ ARTIFACT_PROTOCOL_INSTRUCTION = (
     '- image    图片：{"title","url","alt"?,"mime_type"?,"metadata"?}\n'
     '- diff     代码改动对比：{"title","before","after","file_path"?,"language"?,"metadata"?}\n'
     '- document 可预览文档/文件：{"title","content","format"?(md/py/js/json/txt...),"language"?,"editable"?,"metadata"?}\n'
-    '- web      网页预览：{"title","url"?,"html"?,"preview_title"?,"metadata"?}\n\n'
+    '- web      网页预览：{"title","url"?,"html"?,"preview_title"?,"metadata"?}\n'
+    '- deploy   后台真实部署（系统会在 127.0.0.1 真起一个端口，前端出现带实时预览且可一键关闭端口的部署卡片）：\n'
+    '           {"kind":"static"|"command","title","source_dir"?,"command"?,"entry"?,"files"?,"env"?}\n'
+    '           · kind=static：把一个**已存在的目录**作为静态网页托管，source_dir 填该目录相对你工作目录的路径（如 "dist" 或 "."），entry 默认 index.html；\n'
+    '           · kind=command：在 source_dir 目录下运行一条常驻启动命令，command 用 $PORT 占位监听端口（如 "uvicorn app:app --host 127.0.0.1 --port $PORT"）；\n'
+    '           · files 可选：path->content，把少量启动文件补写进 source_dir（路径不得越界）。\n\n'
     "规则：\n"
     "- JSON 必须合法、可一次性解析；顶层只放 artifact_type 与同名的类型对象；"
     "content/before/after/html 内的换行必须写成 JSON 字符串里的 \\n 转义，不能放未转义的真实换行。\n"
@@ -159,6 +164,9 @@ ARTIFACT_PROTOCOL_INSTRUCTION = (
     "document 产物标记块；title 使用文件名或简短标题，content 放完整可展示内容，"
     "format/language 按文件扩展名填写，editable 通常设为 true。\n"
     "- 用户要求展示代码修改前后对比时，必须输出 diff 产物标记块。\n"
+    "- 用户要求“部署/上线/运行起来看效果”时：先用你的文件工具在工作目录把要部署的文件或后端代码真实写盘，"
+    "再输出 deploy 标记块（kind=static 用 source_dir 指向静态目录，kind=command 给出含 $PORT 的启动命令并用 source_dir 指向代码目录）。"
+    "不要用 web 预览冒充部署——只有 deploy 标记块才会真正开端口并生成可关闭的部署卡片。\n"
     "- 不要把 shell 命令输出当作已经完成产物展示；命令只用于获取内容，产物展示必须靠标记块。\n"
     "- 仅在确有产物要展示时使用；普通解释照常直接输出，不要包进标记。\n"
     "- 标记块之外的正文会照常流式展示给用户。\n"
@@ -179,21 +187,31 @@ class ArtifactProtocolProvider(ContextProvider):
 
 # 动态provider
 
-class ToolOutputProvider(MemoryProvider):
+class ReActToolFeedbackProvider(MemoryProvider):
+    """ReACT 工具反馈：逐条渲染已在 memory 里拼好的完整 ReACT 块
+    （Thought→Action→Args→Observation），让模型在下一轮看到自己当初的
+    思考与行动，而不只是孤立的 Observation —— 从根上避免重复调用同一工具。
+    """
     name = "tool_output"
 
     def get(self, state: dict) -> list[str]:
         items = self._get_items(state)
         if not items:
             return []
-        parts = [f"## 工具反馈（{len(items)} 条）"]
+        parts = [f"## ReACT 工具反馈（{len(items)} 条）：思考→行动→观察"]
         for item in items:
+            # item.content 已是完整 ReACT 块（由 AgentBase._build_react_block 生成）
             parts.append(f"### {item.source}\n{item.content}")
             if item.metadata.get("summarized"):
                 parts.append(
                     f'（内容已压缩）'
                 )
         return ["\n\n".join(parts)]
+
+
+# 别名：保留旧名以兼容大量已有 import / isinstance 检查（指向同一类对象，
+# isinstance(provider, ToolOutputProvider) 仍正确）。
+ToolOutputProvider = ReActToolFeedbackProvider
 
 
 class HistoryProvider(MemoryProvider):
