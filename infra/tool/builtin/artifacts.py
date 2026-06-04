@@ -40,7 +40,7 @@ INLINE_ARTIFACT = Tool(
                 "description": "图片消息产物参数",
                 "properties": {
                     "title": {"type": "string", "description": "图片标题"},
-                    "url": {"type": "string", "description": "图片 URL 或 data URL"},
+                    "url": {"type": "string", "description": "图片 URL"},
                     "alt": {"type": "string", "description": "图片替代文本"},
                     "mime_type": {"type": "string", "description": "图片 MIME 类型"},
                     "metadata": {"type": "object", "description": "前端渲染附加信息"},
