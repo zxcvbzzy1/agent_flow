@@ -8,6 +8,7 @@ from domain.event import ToolEventFactory
 from domain.state import Agent_state
 from domain.tool import Tool
 from domain.json_parse import robust_json_load
+from domain.runtime_hooks import get_skill_retriever
 
 @dataclass
 class ToolCall:
@@ -377,8 +378,6 @@ class AgentBase(ABC):
         if not getattr(self, "skill_recall_enabled", True) or not prompt:
             return
         try:
-            from domain.runtime_hooks import get_skill_retriever
-
             retriever = get_skill_retriever()
             if retriever is None:
                 return

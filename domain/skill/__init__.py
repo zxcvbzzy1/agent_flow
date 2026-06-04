@@ -32,6 +32,7 @@ from domain.skill.vectorizer import (
     Embedder,
     cosine_similarity,
 )
+from domain.runtime_hooks import register_skill_retriever
 
 # 进程内默认单例：注册表 + 检索器（后续可整体替换为 RAG 版本）
 default_registry = SkillRegistry()
@@ -49,9 +50,6 @@ def bootstrap_skills(skills_dir=None, *, force: bool = False) -> VectorSkillRetr
     global _bootstrapped
     if _bootstrapped and not force:
         return default_retriever
-
-    from domain.runtime_hooks import register_skill_retriever
-
     try:
         skills = load_skills_from_dir(skills_dir)
         default_registry.clear()

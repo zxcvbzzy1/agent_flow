@@ -28,7 +28,6 @@ class ToolRegistryService:
         import infra.tool.builtin.file_tools  # noqa: F401
         import infra.tool.builtin.skill  # noqa: F401
         import infra.tool.tools_attach_methods  # noqa: F401
-
         # 加载技能文件并把检索器注册到 runtime_hooks（系统召回 + recall_skill 工具共用）。
         # 放在工具加载阶段：agent_flow 与 im_backend 两条启动路径都会经过这里，幂等。
         from domain.skill import bootstrap_skills
