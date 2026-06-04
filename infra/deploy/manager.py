@@ -288,6 +288,9 @@ class DeploymentManager:
         for rel_path, content in (files or {}).items():
             if not isinstance(rel_path, str) or not rel_path.strip():
                 continue
+            # content 为 None = 仅引用工作目录里已存在的文件，不在此落地/重写
+            if content is None:
+                continue
             # 防止路径穿越
             target = (root / rel_path).resolve()
             try:
