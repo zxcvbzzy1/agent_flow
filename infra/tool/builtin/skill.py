@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from domain.agent_base import AgentBase
 from domain.event import Event
+from domain.run_context import current_agent
 from domain.runtime_hooks import get_skill_retriever
 from domain.tool import Tool, Tool_respond
 from infra.config import bus, factory
@@ -85,7 +86,8 @@ def recall_skill(**kwargs) -> Event:
         )
 
     # 注入到 agent 状态，供 SkillProvider 在后续轮次持续注入
-    agent = AgentBase.get_instance_dict().get(agent_id)
+    # per-run 隔离：优先用 contextvar 里的“本实例”，回退到全局实例表（向后兼容）。
+    agent = current_agent.get() or AgentBase.get_instance_dict().get(agent_id)
     if agent is not None and hasattr(agent, "merge_recalled_skills"):
         try:
             agent.merge_recalled_skills(hits, source="tool")

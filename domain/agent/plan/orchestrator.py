@@ -59,7 +59,7 @@ class PlanOrchestrator:
         executors: dict[str, AgentBase],
         step_context_engine: ContextEngine,
         event_bus: EventBusPort | None = None,
-        state: OrchestratorState = OrchestratorState(),
+        state: OrchestratorState | None = None,
         max_replan_rounds: int = 5,
     ) -> None:
         self.planner = planner
@@ -68,7 +68,8 @@ class PlanOrchestrator:
         self.event_bus = event_bus
         self.max_replan_rounds = max_replan_rounds
         self._replan_rounds = 0
-        self.state = state 
+        # 避免可变默认参数跨实例共享：未显式传入时每个 orchestrator 独立构造 OrchestratorState。
+        self.state = state if state is not None else OrchestratorState()
         self._executor_locks: dict[str, asyncio.Lock] = {
             executor_id: asyncio.Lock()
             for executor_id in executors

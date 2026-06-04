@@ -10,6 +10,7 @@ from domain.agent.plan.planAgent import PlanAgent
 from domain.agent_base import AgentBase
 from domain.context.context import ContextEngine
 from domain.event import Event, EventBusPort
+from domain.run_context import current_run_id
 from infra.db.mongodb import DocumentStore
 
 from application.services.agents import AgentFactoryService
@@ -203,6 +204,9 @@ class RunOrchestrationService:
 
     async def _execute_run(self, record: dict[str, Any]) -> None:
         run_id = record["run_id"]
+        # per-run 隔离：把 run_id 绑定到 contextvar，供工具事件镜像在缺失 run_id 时按当前 run 解析，
+        # 避免并发 run 下 agent_id -> run_id 全局映射 last-writer-wins 串扰。finally 中 reset。
+        token = current_run_id.set(run_id)
         self._store.update_one(
             "runs",
             {"run_id": run_id},
@@ -230,11 +234,13 @@ class RunOrchestrationService:
             for executor_id in record.get("executor_agent_ids", []):
                 self._frontend_bridge.unregister_agent_run(executor_id, run_id)
             self._tasks.pop(run_id, None)
+            current_run_id.reset(token)
 
     async def _execute_react_run(self, record: dict[str, Any]) -> None:
         run_id = record["run_id"]
         executor_id = record["executor_agent_id"]
-        executor = self._agents.get_agent(executor_id)
+        # per-run 隔离：构造全新 executor 实例（独立 engine/memory/states），避免上一轮残留状态泄漏。
+        executor = self._agents.build_run_agent(executor_id)
         if not isinstance(executor, AgentBase):
             raise TypeError(f"executor_agent_id 不是执行型 agent: {executor_id}")
 
@@ -268,7 +274,8 @@ class RunOrchestrationService:
 
     async def _execute_plan_run(self, record: dict[str, Any]) -> None:
         run_id = record["run_id"]
-        planner = self._agents.get_agent(record["planner_agent_id"])
+        # per-run 隔离：每个 run 用全新 planner 实例，避免跨会话残留与并发污染。
+        planner = self._agents.build_run_agent(record["planner_agent_id"])
         if not isinstance(planner, PlanAgent):
             raise TypeError("planner_agent_id 必须指向 planner agent")
         self._frontend_bridge.register_agent_run(planner.id, run_id)
@@ -277,7 +284,8 @@ class RunOrchestrationService:
 
         executors: dict[str, AgentBase] = {}
         for executor_id in record["executor_agent_ids"]:
-            executor = self._agents.get_agent(executor_id)
+            # per-run 隔离：每个 executor 都是本 run 专属的全新实例。
+            executor = self._agents.build_run_agent(executor_id)
             if not isinstance(executor, AgentBase):
                 raise TypeError(f"executor_agent_id 不是执行型 agent: {executor_id}")
             self._frontend_bridge.register_agent_run(executor.id, run_id)

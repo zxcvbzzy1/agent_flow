@@ -6,6 +6,7 @@ from typing import Any
 
 from domain.agent.plan.planAgent import PlanAgent
 from domain.agent_base import AgentBase
+from domain.context.context import ContextEngine
 from infra.LLM.LLM_infra import LLM_Client
 from infra.db.mongodb import DocumentStore
 
@@ -195,6 +196,20 @@ class AgentFactoryService:
             self._agents[agent_id] = self._build_agent(record)
         return self._agents[agent_id]
 
+    def build_run_agent(self, agent_id: str) -> AgentBase | PlanAgent:
+        """为单次 run 构造一个全新的 agent 实例（全新 engine + memory + states），不缓存。
+
+        per-run 隔离的入口：planner 与每个 executor 在 run 内都用独立实例，互不共享 states/memory，
+        从而修复 executor 旧状态泄漏、planner 跨会话残留、以及同一 agent_id 并发 run 的相互污染。
+        与 get_agent 一致地在 agent 不存在时抛 KeyError。
+        注意：emit 的 agent.id 仍是逻辑 id（record["agent_id"]），前端按逻辑 id 关联 trace 不受影响。
+        """
+        record = self.get_agent_record(agent_id)
+        if record is None:
+            raise KeyError(f"Agent 不存在: {agent_id}")
+        engine = self._contexts.build_engine(record["context_id"])
+        return self._construct_agent(record, engine)
+
     def delete_agent(self, agent_id: str) -> dict[str, Any]:
         if agent_id in self.PROTECTED_AGENT_IDS:
             raise ValueError("默认 Agent 不允许删除")
@@ -227,14 +242,28 @@ class AgentFactoryService:
         return {"deleted": True, "agent_id": agent_id, "stats": stats}
 
     def _build_agent(self, record: dict[str, Any]) -> AgentBase | PlanAgent:
+        # 缓存路径（get_agent / create_agent 用）：复用 ContextService 缓存的 engine。
         context = self._contexts.get_engine(record["context_id"])
+        return self._construct_agent(record, context)
+
+    def _construct_agent(
+        self,
+        record: dict[str, Any],
+        engine: ContextEngine,
+    ) -> AgentBase | PlanAgent:
+        """根据 record + 给定 engine 构造 agent 实例。
+
+        缓存路径（_build_agent）传入 ContextService 缓存的共享 engine；
+        per-run 路径（build_run_agent）传入 build_engine 产出的全新独立 engine。
+        agent.id 始终为逻辑 id（record["agent_id"]）。
+        """
         llm = self._build_llm(record)
         if record.get("agent_type") == "planner":
             agent = PlanAgent(
                 id=record["agent_id"],
                 name=record["name"],
                 llm=llm,
-                context=context,
+                context=engine,
             )
         elif (record.get("metadata") or {}).get("agent_kind") in {"claude_code", "codex"}:
             if self._external_executor_builder is None:
@@ -245,7 +274,7 @@ class AgentFactoryService:
                 id=record["agent_id"],
                 name=record["name"],
                 llm=llm,
-                context=context,
+                context=engine,
                 role_prompt=record.get("role_prompt", ""),
                 work_path=(record.get("metadata") or {}).get("workdir", ""),
             )

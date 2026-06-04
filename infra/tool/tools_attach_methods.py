@@ -1,6 +1,7 @@
 import inspect
 
 from domain.event import EventBusReturn, Event
+from domain.run_context import current_agent
 from domain.runtime_hooks import get_tool_event_observer
 from infra.event_bind import On_bind
 from infra.config import factory, agent_dict, bus
@@ -53,11 +54,16 @@ async def human_collaboration_middleware(event: Event, call_next):
 
 
 # 成功/失败返回事件
-@on_tool.on_pattern("*.succeeded") 
+@on_tool.on_pattern("*.succeeded")
 async def on_tool_success(**kwargs):
     agent_id = kwargs.get("agent_id")
     event = kwargs.get("_event")
-    agent = agent_dict.get(agent_id)
+    # per-run 隔离：优先用 contextvar 里的“本实例”，回退到全局 agent_dict[agent_id]（向后兼容）。
+    agent = current_agent.get() or agent_dict.get(agent_id)
+    if agent is None:
+        # 无法定位 agent（contextvar 未设且全局映射缺失）：优雅跳过，避免 AttributeError。
+        print(f"[tool] 无法定位 agent，跳过 succeeded 回调: agent_id={agent_id}")
+        return EventBusReturn(agent_id=agent_id, src_object=event, results=kwargs.get("respond"), success=True)
     await agent.on_tool_call(
         tool_name=kwargs.get("name"),
         success=True,
@@ -68,8 +74,12 @@ async def on_tool_success(**kwargs):
 @on_tool.on_pattern("*.failed")
 async def on_tool_fail(**kwargs):  # event.playload为Tool_respond类，kwargs为Tool_respond类解构可字典调用
     agent_id = kwargs.get("agent_id")
-    agent = agent_dict.get(agent_id)
+    # per-run 隔离：优先用 contextvar 里的“本实例”，回退到全局 agent_dict[agent_id]（向后兼容）。
+    agent = current_agent.get() or agent_dict.get(agent_id)
     event = kwargs.get("_event")
+    if agent is None:
+        print(f"[tool] 无法定位 agent，跳过 failed 回调: agent_id={agent_id}")
+        return EventBusReturn(agent_id=agent_id, src_object=event, results="工具调用失败事件处理完成", success=False)
     await agent.on_tool_call(
         tool_name=kwargs.get("name"),
         success=False,

@@ -4,6 +4,7 @@ import time
 from typing import Any
 
 from domain.event import Event
+from domain.run_context import current_run_id
 
 from application.events.schemas import tool_event_payload
 from application.services.events import EventStreamService
@@ -41,6 +42,11 @@ class FrontendEventBridge:
         self._agent_runs.pop(agent_id, None)
 
     def run_id_for_agent(self, agent_id: str) -> str:
+        # per-run 隔离：优先用当前 run 的 contextvar（并发 run 下精确路由），
+        # 仅在 contextvar 未设置（如非 run 上下文触发的工具事件）时回退到全局映射（保留向后兼容）。
+        run_id = current_run_id.get()
+        if run_id:
+            return run_id
         return self._agent_runs.get(agent_id, "")
 
     def on_tool_event(self, event: Event) -> None:

@@ -9,7 +9,7 @@ from domain.state import Agent_state
 from domain.tool import Tool
 from domain.json_parse import robust_json_load
 from domain.runtime_hooks import get_skill_retriever
-
+from domain.run_context import current_agent
 @dataclass
 class ToolCall:
     """LLM 决定调用的一个工具。"""
@@ -175,9 +175,16 @@ class AgentBase(ABC):
         await self._tool_done.wait()
 
     async def _run_one(self, tc: ToolCall) -> None:
-        await self.tool_factory.tool(tc.tool_name).emit_called(
-            {**tc.arguments, "agent_id": self.id}
-        )
+        # per-run 隔离：把当前 agent 实例绑定到 contextvar，使工具回调（succeeded/failed/recall_skill）
+        # 解析到“本实例”而非全局 _instance_list[agent_id]（并发 run 下 last-writer-wins 会路由错实例）。
+        # emit 路径全程 inline await（同一 asyncio task），故 contextvar 在回调中可见。
+        token = current_agent.set(self)
+        try:
+            await self.tool_factory.tool(tc.tool_name).emit_called(
+                {**tc.arguments, "agent_id": self.id}
+            )
+        finally:
+            current_agent.reset(token)
 
     # ── 工具回调 ──────────────────────────────────────────────────
 

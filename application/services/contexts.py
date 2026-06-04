@@ -218,6 +218,17 @@ class ContextService:
             self._engines[context_id] = self._build_engine(record)
         return self._engines[context_id]
 
+    def build_engine(self, context_id: str) -> ContextEngine:
+        """构造一个全新的 ContextEngine（含全新 DefaultShortTermMemory），不缓存到 self._engines。
+
+        供 per-run 隔离使用：每个 run 拿到独立的 engine + memory，避免并发/跨会话共享同一短期记忆。
+        与 get_engine 一致地在上下文不存在时抛 KeyError。
+        """
+        record = self.get_context(context_id)
+        if record is None:
+            raise KeyError(f"上下文不存在: {context_id}")
+        return self._build_engine(record)
+
     def delete_context(self, context_id: str) -> dict[str, Any]:
         if context_id in self.PROTECTED_CONTEXT_IDS:
             raise ValueError("默认 ContextEngine 不允许删除")

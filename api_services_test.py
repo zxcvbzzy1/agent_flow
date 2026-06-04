@@ -362,6 +362,7 @@ async def test_react_run_uses_start_with_history_and_writes_assistant_message():
     )
     executor = container.agents.get_agent("default_executor")
     original_start_with_history = executor.start_with_history
+    original_build_run_agent = container.agents.build_run_agent
     called_prompts = []
 
     async def fake_start_with_history(prompt: str) -> None:
@@ -371,7 +372,15 @@ async def test_react_run_uses_start_with_history_and_writes_assistant_message():
         executor.states["finish_reason"] = "react done"
         executor.states["is_finished"] = True
 
+    # per-run 隔离后 run 用 build_run_agent 构造全新实例，这里让其返回被打桩的缓存实例，
+    # 以便既走真实 run 路径，又能观察/断言到同一实例。
+    def fake_build_run_agent(agent_id: str):
+        if agent_id == "default_executor":
+            return executor
+        return original_build_run_agent(agent_id)
+
     executor.start_with_history = fake_start_with_history
+    container.agents.build_run_agent = fake_build_run_agent
     try:
         run = container.runs.create_run(
             prompt=user_message["content"],
@@ -384,6 +393,7 @@ async def test_react_run_uses_start_with_history_and_writes_assistant_message():
         await asyncio.sleep(0.05)
     finally:
         executor.start_with_history = original_start_with_history
+        container.agents.build_run_agent = original_build_run_agent
 
     stored = container.runs.get_run(run["run_id"])
     messages = container.conversations.list_messages(conversation["conversation_id"])
@@ -417,13 +427,22 @@ async def test_conversation_history_is_isolated_between_react_runs():
 
     executor = container.agents.get_agent("default_executor")
     original_start_with_history = executor.start_with_history
+    original_build_run_agent = container.agents.build_run_agent
 
     async def fake_start_with_history(prompt: str) -> None:
         executor.states["final"] = "isolated final"
         executor.states["finish_reason"] = "done"
         executor.states["is_finished"] = True
 
+    # per-run 隔离后 run 用 build_run_agent 构造全新实例，这里让其返回被打桩的缓存实例，
+    # 以便断言历史确实写进了本 run 使用的实例的 memory。
+    def fake_build_run_agent(agent_id: str):
+        if agent_id == "default_executor":
+            return executor
+        return original_build_run_agent(agent_id)
+
     executor.start_with_history = fake_start_with_history
+    container.agents.build_run_agent = fake_build_run_agent
     try:
         container.runs.create_run(
             prompt=current["content"],
@@ -436,6 +455,7 @@ async def test_conversation_history_is_isolated_between_react_runs():
         await asyncio.sleep(0.05)
     finally:
         executor.start_with_history = original_start_with_history
+        container.agents.build_run_agent = original_build_run_agent
 
     memory = executor.context_engine.get_memory()
     history = "\n".join(
@@ -460,6 +480,7 @@ async def test_plan_run_loads_conversation_history_into_planner_memory():
     planner = container.agents.get_agent("default_planner")
     original_generate_plan = planner.generate_plan
     original_summarize_result = planner.summarize_result
+    original_build_run_agent = container.agents.build_run_agent
     observed_history = []
 
     async def fake_generate_plan(state, executor_ids):
@@ -473,8 +494,16 @@ async def test_plan_run_loads_conversation_history_into_planner_memory():
     async def fake_summarize_result(state):
         return "plan final"
 
+    # per-run 隔离后 run 用 build_run_agent 构造全新 planner 实例，这里让其返回被打桩的
+    # 缓存实例，以便断言会话历史确实被装载进本 run 使用的 planner 的 memory；executor 仍走真实构造。
+    def fake_build_run_agent(agent_id: str):
+        if agent_id == "default_planner":
+            return planner
+        return original_build_run_agent(agent_id)
+
     planner.generate_plan = fake_generate_plan
     planner.summarize_result = fake_summarize_result
+    container.agents.build_run_agent = fake_build_run_agent
     try:
         container.runs.create_run(
             prompt=current["content"],
@@ -490,6 +519,7 @@ async def test_plan_run_loads_conversation_history_into_planner_memory():
     finally:
         planner.generate_plan = original_generate_plan
         planner.summarize_result = original_summarize_result
+        container.agents.build_run_agent = original_build_run_agent
 
     assert observed_history
     assert "plan previous" in observed_history[0]
