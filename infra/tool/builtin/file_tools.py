@@ -34,152 +34,111 @@ SEARCH_MAX_FILE_BYTES = 5 * 1024 * 1024
 # 工具定义
 # ---------------------------------------------------------------------------
 
-READ_FILE = Tool(
-    name="read_file",
+FILE = Tool(
+    name="file",
     description=(
-        "读取文本文件内容。可选 start_line / end_line（1 起始、闭区间）只读取某一行范围。"
-        "超大输出会截断。路径可为绝对路径或相对于工作目录的相对路径。"
+        "统一文件操作工具，通过 operation 字段选择操作类型，支持 read / write / append / "
+        "edit / apply_patch / list_dir / glob / search_text 等操作。\n"
+        "为什么使用此工具而非 bash：避免把大段内容塞进单个 shell 参数造成 JSON 解析失败，"
+        "参数清晰隔离。\n"
+        "路径处理：绝对路径直接使用；相对路径相对于 agent 工作目录解析；"
+        "永远不会因为路径在工作目录之外而拒绝。"
     ),
     field="system",
     input_schema={
         "type": "object",
+        "required": ["operation"],
         "properties": {
-            "path": {"type": "string", "description": "文件路径（绝对或相对工作目录）"},
-            "start_line": {"type": "integer", "description": "起始行，1 起始、闭区间（可选）"},
-            "end_line": {"type": "integer", "description": "结束行，1 起始、闭区间（可选）"},
-        },
-        "required": ["path"],
-    },
-)
-
-WRITE_FILE = Tool(
-    name="write_file",
-    description=(
-        "写入文本文件（utf-8），会自动创建父目录并覆盖原内容。"
-        "路径可为绝对路径或相对于工作目录的相对路径。"
-    ),
-    field="system",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "文件路径（绝对或相对工作目录）"},
-            "content": {"type": "string", "description": "要写入的完整内容"},
-        },
-        "required": ["path", "content"],
-    },
-)
-
-APPEND_FILE = Tool(
-    name="append_file",
-    description=(
-        "向文本文件追加内容（utf-8），文件不存在时会创建（含父目录）。"
-        "路径可为绝对路径或相对于工作目录的相对路径。"
-    ),
-    field="system",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "文件路径（绝对或相对工作目录）"},
-            "content": {"type": "string", "description": "要追加的内容"},
-        },
-        "required": ["path", "content"],
-    },
-)
-
-EDIT_FILE = Tool(
-    name="edit_file",
-    description=(
-        "在文件中把 old_string 替换为 new_string。默认只替换一处，若 old_string 出现多次"
-        "且未设置 replace_all 会报错并要求更唯一的字符串或开启 replace_all。"
-        "路径可为绝对路径或相对于工作目录的相对路径。"
-    ),
-    field="system",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "文件路径（绝对或相对工作目录）"},
-            "old_string": {"type": "string", "description": "要被替换的原文本"},
-            "new_string": {"type": "string", "description": "替换后的新文本"},
-            "replace_all": {
-                "type": "boolean",
-                "description": "是否替换全部匹配，默认 false",
-            },
-        },
-        "required": ["path", "old_string", "new_string"],
-    },
-)
-
-APPLY_PATCH = Tool(
-    name="apply_patch",
-    description=(
-        "应用一个统一格式（unified diff，git 风格）补丁，可一次包含多个文件。"
-        "纯 Python 实现，按文件原子应用：某文件任一 hunk 匹配失败则该文件不写入并报错。"
-        "支持修改已有文件和创建新文件（源为 /dev/null）。"
-    ),
-    field="system",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "patch": {
+            "operation": {
                 "type": "string",
-                "description": "统一格式 diff 文本，含 --- a/path、+++ b/path 头和 @@ hunk",
+                "enum": [
+                    "read",
+                    "write",
+                    "append",
+                    "edit",
+                    "apply_patch",
+                    "list_dir",
+                    "glob",
+                    "search_text",
+                ],
+                "description": "要执行的文件操作",
+            },
+            "read": {
+                "type": "object",
+                "description": "读取文本文件内容的参数。可选 start_line / end_line（1 起始、闭区间）只读取某一行范围。超大输出会截断。路径可为绝对路径或相对于工作目录的相对路径。",
+                "properties": {
+                    "path": {"type": "string", "description": "文件路径（绝对或相对工作目录）"},
+                    "start_line": {"type": "integer", "description": "起始行，1 起始、闭区间（可选）"},
+                    "end_line": {"type": "integer", "description": "结束行，1 起始、闭区间（可选）"},
+                },
+            },
+            "write": {
+                "type": "object",
+                "description": "写入文本文件（utf-8）的参数，会自动创建父目录并覆盖原内容。路径可为绝对路径或相对于工作目录的相对路径。必填：path、content。",
+                "properties": {
+                    "path": {"type": "string", "description": "文件路径（绝对或相对工作目录）"},
+                    "content": {"type": "string", "description": "要写入的完整内容"},
+                },
+            },
+            "append": {
+                "type": "object",
+                "description": "向文本文件追加内容（utf-8）的参数，文件不存在时会创建（含父目录）。路径可为绝对路径或相对于工作目录的相对路径。必填：path、content。",
+                "properties": {
+                    "path": {"type": "string", "description": "文件路径（绝对或相对工作目录）"},
+                    "content": {"type": "string", "description": "要追加的内容"},
+                },
+            },
+            "edit": {
+                "type": "object",
+                "description": "在文件中把 old_string 替换为 new_string 的参数。默认只替换一处，若 old_string 出现多次且未设置 replace_all 会报错并要求更唯一的字符串或开启 replace_all。路径可为绝对路径或相对于工作目录的相对路径。必填：path、old_string、new_string。",
+                "properties": {
+                    "path": {"type": "string", "description": "文件路径（绝对或相对工作目录）"},
+                    "old_string": {"type": "string", "description": "要被替换的原文本"},
+                    "new_string": {"type": "string", "description": "替换后的新文本"},
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "是否替换全部匹配，默认 false",
+                    },
+                },
+            },
+            "apply_patch": {
+                "type": "object",
+                "description": "应用一个统一格式（unified diff，git 风格）补丁的参数，可一次包含多个文件。纯 Python 实现，按文件原子应用。支持修改已有文件和创建新文件（源为 /dev/null）。必填：patch。",
+                "properties": {
+                    "patch": {
+                        "type": "string",
+                        "description": "统一格式 diff 文本，含 --- a/path、+++ b/path 头和 @@ hunk",
+                    },
+                },
+            },
+            "list_dir": {
+                "type": "object",
+                "description": "列出目录下的条目的参数，包含名称、类型（file/dir）和文件大小。可选 recursive 递归列出。路径可为绝对路径或相对于工作目录的相对路径，默认 '.'。",
+                "properties": {
+                    "path": {"type": "string", "description": "目录路径，默认 '.'（相对工作目录）"},
+                    "recursive": {"type": "boolean", "description": "是否递归，默认 false"},
+                },
+            },
+            "glob": {
+                "type": "object",
+                "description": "按 glob 模式匹配文件的参数（支持 ** 递归）。可选 path 作为基准目录，默认工作目录。返回匹配到的路径列表。必填：pattern。",
+                "properties": {
+                    "pattern": {"type": "string", "description": "glob 模式，如 '**/*.py'"},
+                    "path": {"type": "string", "description": "基准目录，默认工作目录"},
+                },
+            },
+            "search_text": {
+                "type": "object",
+                "description": "在文件中按行搜索文本的参数（regex=true 时为正则，否则为字面子串）。可选 glob 过滤文件（如 '**/*.py'），max_results 限制结果数。返回 'relpath:lineno: line' 列表。必填：pattern。",
+                "properties": {
+                    "pattern": {"type": "string", "description": "搜索模式"},
+                    "path": {"type": "string", "description": "基准目录，默认工作目录"},
+                    "regex": {"type": "boolean", "description": "是否按正则匹配，默认 false"},
+                    "glob": {"type": "string", "description": "文件过滤 glob，如 '**/*.py'（可选）"},
+                    "max_results": {"type": "integer", "description": "结果上限，默认 200"},
+                },
             },
         },
-        "required": ["patch"],
-    },
-)
-
-LIST_DIR = Tool(
-    name="list_dir",
-    description=(
-        "列出目录下的条目，包含名称、类型（file/dir）和文件大小。可选 recursive 递归列出。"
-        "路径可为绝对路径或相对于工作目录的相对路径，默认 '.'。"
-    ),
-    field="system",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "目录路径，默认 '.'（相对工作目录）"},
-            "recursive": {"type": "boolean", "description": "是否递归，默认 false"},
-        },
-        "required": [],
-    },
-)
-
-GLOB = Tool(
-    name="glob",
-    description=(
-        "按 glob 模式匹配文件（支持 ** 递归）。可选 path 作为基准目录，默认工作目录。"
-        "返回匹配到的路径列表。"
-    ),
-    field="system",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "pattern": {"type": "string", "description": "glob 模式，如 '**/*.py'"},
-            "path": {"type": "string", "description": "基准目录，默认工作目录"},
-        },
-        "required": ["pattern"],
-    },
-)
-
-SEARCH_TEXT = Tool(
-    name="search_text",
-    description=(
-        "在文件中按行搜索文本（regex=true 时为正则，否则为字面子串）。可选 glob 过滤文件"
-        "（如 '**/*.py'），max_results 限制结果数。返回 'relpath:lineno: line' 列表。"
-    ),
-    field="system",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "pattern": {"type": "string", "description": "搜索模式"},
-            "path": {"type": "string", "description": "基准目录，默认工作目录"},
-            "regex": {"type": "boolean", "description": "是否按正则匹配，默认 false"},
-            "glob": {"type": "string", "description": "文件过滤 glob，如 '**/*.py'（可选）"},
-            "max_results": {"type": "integer", "description": "结果上限，默认 200"},
-        },
-        "required": ["pattern"],
     },
 )
 
@@ -345,7 +304,7 @@ def _apply_hunks_to_lines(original: list[str], hunks: list[dict], file_label: st
     src_index = 0  # 已消费到原文件的位置（0 起始）
 
     for h_num, hunk in enumerate(hunks, start=1):
-        # hunk 期望匹配的“旧侧”行（上下文 + 删除）
+        # hunk 期望匹配的"旧侧"行（上下文 + 删除）
         old_lines = [content for tag, content in hunk["lines"] if tag in (" ", "-")]
         hint = max(hunk["old_start"] - 1, 0)  # 转 0 起始
         match_at = _find_hunk_position(original, old_lines, hint, src_index)
@@ -673,19 +632,7 @@ def _do_search_text(
 # ---------------------------------------------------------------------------
 
 on_tool = On_bind()
-factory._build_and_register_list(
-    [
-        READ_FILE,
-        WRITE_FILE,
-        APPEND_FILE,
-        EDIT_FILE,
-        APPLY_PATCH,
-        LIST_DIR,
-        GLOB,
-        SEARCH_TEXT,
-    ],
-    bus,
-)
+factory._build_and_register_list([FILE], bus)
 
 
 def _succeed(agent_id: str, name: str, respond: str) -> Event:
@@ -703,112 +650,116 @@ def _fail(agent_id: str, name: str, message: str) -> Event:
     )
 
 
-@on_tool.on(factory.tool("read_file").called())
-def on_read_file(**kwargs) -> Event:
+@on_tool.on(factory.tool("file").called())
+def on_file(**kwargs) -> Event:
     agent_id = kwargs.get("agent_id", "")
-    name = "read_file"
-    try:
-        respond = _do_read_file(
-            kwargs["path"],
-            agent_id,
-            start_line=kwargs.get("start_line"),
-            end_line=kwargs.get("end_line"),
-        )
-        return _succeed(agent_id, name, respond)
-    except Exception as exc:  # noqa: BLE001
-        return _fail(agent_id, name, f"读取失败: {exc}")
+    name = "file"
+    operation = str(kwargs.get("operation", "")).strip().lower()
 
+    if operation == "read":
+        params = kwargs.get("read")
+        if not isinstance(params, dict):
+            return _fail(agent_id, name, "操作 read 需要提供 `read` 参数对象")
+        try:
+            respond = _do_read_file(
+                params["path"],
+                agent_id,
+                start_line=params.get("start_line"),
+                end_line=params.get("end_line"),
+            )
+            return _succeed(agent_id, name, respond)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(agent_id, name, f"读取失败: {exc}")
 
-@on_tool.on(factory.tool("write_file").called())
-def on_write_file(**kwargs) -> Event:
-    agent_id = kwargs.get("agent_id", "")
-    name = "write_file"
-    try:
-        respond = _do_write_file(kwargs["path"], kwargs["content"], agent_id)
-        return _succeed(agent_id, name, respond)
-    except Exception as exc:  # noqa: BLE001
-        return _fail(agent_id, name, f"写入失败: {exc}")
+    elif operation == "write":
+        params = kwargs.get("write")
+        if not isinstance(params, dict):
+            return _fail(agent_id, name, "操作 write 需要提供 `write` 参数对象")
+        try:
+            respond = _do_write_file(params["path"], params["content"], agent_id)
+            return _succeed(agent_id, name, respond)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(agent_id, name, f"写入失败: {exc}")
 
+    elif operation == "append":
+        params = kwargs.get("append")
+        if not isinstance(params, dict):
+            return _fail(agent_id, name, "操作 append 需要提供 `append` 参数对象")
+        try:
+            respond = _do_append_file(params["path"], params["content"], agent_id)
+            return _succeed(agent_id, name, respond)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(agent_id, name, f"追加失败: {exc}")
 
-@on_tool.on(factory.tool("append_file").called())
-def on_append_file(**kwargs) -> Event:
-    agent_id = kwargs.get("agent_id", "")
-    name = "append_file"
-    try:
-        respond = _do_append_file(kwargs["path"], kwargs["content"], agent_id)
-        return _succeed(agent_id, name, respond)
-    except Exception as exc:  # noqa: BLE001
-        return _fail(agent_id, name, f"追加失败: {exc}")
+    elif operation == "edit":
+        params = kwargs.get("edit")
+        if not isinstance(params, dict):
+            return _fail(agent_id, name, "操作 edit 需要提供 `edit` 参数对象")
+        try:
+            respond = _do_edit_file(
+                params["path"],
+                params["old_string"],
+                params["new_string"],
+                agent_id,
+                replace_all=bool(params.get("replace_all", False)),
+            )
+            return _succeed(agent_id, name, respond)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(agent_id, name, f"编辑失败: {exc}")
 
+    elif operation == "apply_patch":
+        params = kwargs.get("apply_patch")
+        if not isinstance(params, dict):
+            return _fail(agent_id, name, "操作 apply_patch 需要提供 `apply_patch` 参数对象")
+        try:
+            changed = _apply_patch_text(params["patch"], agent_id)
+            respond = "已应用补丁，改动文件:\n" + "\n".join(changed)
+            return _succeed(agent_id, name, respond)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(agent_id, name, f"应用补丁失败: {exc}")
 
-@on_tool.on(factory.tool("edit_file").called())
-def on_edit_file(**kwargs) -> Event:
-    agent_id = kwargs.get("agent_id", "")
-    name = "edit_file"
-    try:
-        respond = _do_edit_file(
-            kwargs["path"],
-            kwargs["old_string"],
-            kwargs["new_string"],
-            agent_id,
-            replace_all=bool(kwargs.get("replace_all", False)),
-        )
-        return _succeed(agent_id, name, respond)
-    except Exception as exc:  # noqa: BLE001
-        return _fail(agent_id, name, f"编辑失败: {exc}")
+    elif operation == "list_dir":
+        params = kwargs.get("list_dir")
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            params = {}
+        try:
+            respond = _do_list_dir(
+                params.get("path", "."),
+                agent_id,
+                recursive=bool(params.get("recursive", False)),
+            )
+            return _succeed(agent_id, name, respond)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(agent_id, name, f"列目录失败: {exc}")
 
+    elif operation == "glob":
+        params = kwargs.get("glob")
+        if not isinstance(params, dict):
+            return _fail(agent_id, name, "操作 glob 需要提供 `glob` 参数对象")
+        try:
+            respond = _do_glob(params["pattern"], agent_id, path=params.get("path"))
+            return _succeed(agent_id, name, respond)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(agent_id, name, f"glob 失败: {exc}")
 
-@on_tool.on(factory.tool("apply_patch").called())
-def on_apply_patch(**kwargs) -> Event:
-    agent_id = kwargs.get("agent_id", "")
-    name = "apply_patch"
-    try:
-        changed = _apply_patch_text(kwargs["patch"], agent_id)
-        respond = "已应用补丁，改动文件:\n" + "\n".join(changed)
-        return _succeed(agent_id, name, respond)
-    except Exception as exc:  # noqa: BLE001
-        return _fail(agent_id, name, f"应用补丁失败: {exc}")
+    elif operation == "search_text":
+        params = kwargs.get("search_text")
+        if not isinstance(params, dict):
+            return _fail(agent_id, name, "操作 search_text 需要提供 `search_text` 参数对象")
+        try:
+            respond = _do_search_text(
+                params["pattern"],
+                agent_id,
+                path=params.get("path"),
+                regex=bool(params.get("regex", False)),
+                glob=params.get("glob"),
+                max_results=params.get("max_results", SEARCH_DEFAULT_MAX),
+            )
+            return _succeed(agent_id, name, respond)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(agent_id, name, f"搜索失败: {exc}")
 
-
-@on_tool.on(factory.tool("list_dir").called())
-def on_list_dir(**kwargs) -> Event:
-    agent_id = kwargs.get("agent_id", "")
-    name = "list_dir"
-    try:
-        respond = _do_list_dir(
-            kwargs.get("path", "."),
-            agent_id,
-            recursive=bool(kwargs.get("recursive", False)),
-        )
-        return _succeed(agent_id, name, respond)
-    except Exception as exc:  # noqa: BLE001
-        return _fail(agent_id, name, f"列目录失败: {exc}")
-
-
-@on_tool.on(factory.tool("glob").called())
-def on_glob(**kwargs) -> Event:
-    agent_id = kwargs.get("agent_id", "")
-    name = "glob"
-    try:
-        respond = _do_glob(kwargs["pattern"], agent_id, path=kwargs.get("path"))
-        return _succeed(agent_id, name, respond)
-    except Exception as exc:  # noqa: BLE001
-        return _fail(agent_id, name, f"glob 失败: {exc}")
-
-
-@on_tool.on(factory.tool("search_text").called())
-def on_search_text(**kwargs) -> Event:
-    agent_id = kwargs.get("agent_id", "")
-    name = "search_text"
-    try:
-        respond = _do_search_text(
-            kwargs["pattern"],
-            agent_id,
-            path=kwargs.get("path"),
-            regex=bool(kwargs.get("regex", False)),
-            glob=kwargs.get("glob"),
-            max_results=kwargs.get("max_results", SEARCH_DEFAULT_MAX),
-        )
-        return _succeed(agent_id, name, respond)
-    except Exception as exc:  # noqa: BLE001
-        return _fail(agent_id, name, f"搜索失败: {exc}")
+    else:
+        return _fail(agent_id, name, f"不支持的 operation: {operation}")

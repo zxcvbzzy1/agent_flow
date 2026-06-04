@@ -13,8 +13,7 @@ from infra.tool.common_func import human_approval_service
 BASH = Tool(
     name="bash",
     description="""执行 bash 命令，执行前会审核高危命令和工作路径，返回 stdout、stderr 和退出码。
-    当read_file、append_file、write_file、edit_file、apply_patch、list_dir、glob、search_text工具无法满足需求时，
-    可以使用该工具执行更复杂的文件操作命令。""",
+    当 `file` 工具（read/write/append/edit/apply_patch/list_dir/glob/search_text 等操作）无法满足需求时，可以使用该工具执行更复杂的文件操作命令。""",
     field="system",
     input_schema={
         "type": "object",

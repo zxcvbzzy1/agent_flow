@@ -45,6 +45,10 @@ class Deployment:
     last_seen: float = 0.0
     error: str = ""
     logs: list[str] = field(default_factory=list)
+    # 重启所需的原始模板字段
+    entry: str = "index.html"
+    env: dict = field(default_factory=dict)
+    command_template: str = ""  # 含 $PORT 的原始命令模板（command 字段在 _start_command 后被替换为已解析版本）
     # 运行期句柄，不参与对外序列化
     _process: Any = field(default=None, repr=False, compare=False)
     _log_task: Any = field(default=None, repr=False, compare=False)
@@ -154,6 +158,11 @@ class DeploymentManager:
             error="",
             logs=[],
         )
+        # 保存原始模板，供 restart() 使用
+        deployment.command_template = command or ""
+        deployment.entry = entry
+        deployment.env = dict(env or {})
+
         self._deployments[deployment_id] = deployment
 
         try:
@@ -192,6 +201,57 @@ class DeploymentManager:
         ok = await self._kill_process(deployment)
         deployment.status = "stopped"
         return ok
+
+    async def restart(self, deployment_id: str) -> "Deployment | None":
+        """重启一个已停止或失败的部署，分配新端口，复用原工作目录。"""
+        dep = self._deployments.get(deployment_id)
+        if dep is None:
+            return None
+
+        # 若仍在运行且端口可连接，直接返回
+        if dep.status == "running" and _tcp_can_connect(HOST, dep.port):
+            return dep
+
+        # 杀掉残留进程
+        await self._kill_process(dep)
+
+        # 重置状态，分配新端口
+        dep.port = _pick_free_port()
+        dep.url = f"http://{HOST}:{dep.port}"
+        dep.status = "starting"
+        dep.error = ""
+        dep.logs = []
+        dep.last_seen = time.time()
+        dep._process = None
+        dep.pid = None
+
+        try:
+            if dep.kind == "static":
+                await self._start_static(dep, dep.entry or "index.html")
+            else:
+                await self._start_command(dep, dep.command_template or dep.command, dep.env)
+        except Exception as exc:
+            dep.status = "failed"
+            dep.error = str(exc)[-4000:]
+            await self._kill_process(dep)
+            self._ensure_sweeper()
+            return dep
+
+        ready = await self._wait_ready(dep)
+        if ready:
+            dep.status = "running"
+            dep.last_seen = time.time()
+        else:
+            dep.status = "failed"
+            tail = "\n".join(dep.logs[-30:])
+            dep.error = (
+                f"启动后 {READY_TIMEOUT:.0f}s 内端口 {dep.port} 未就绪。"
+                + (f" 日志尾部:\n{tail}" if tail else "")
+            )[-4000:]
+            await self._kill_process(dep)
+
+        self._ensure_sweeper()
+        return dep
 
     def touch(self, deployment_id: str) -> bool:
         """刷新 last_seen，供闲置回收。"""
@@ -431,6 +491,8 @@ def build_deploy_artifact(deployment: Deployment) -> dict[str, Any]:
         "status": deployment.status,
         "kind": deployment.kind,
         "command": deployment.command or "",
+        "command_template": deployment.command_template or "",
+        "entry": deployment.entry or "index.html",
         "error": deployment.error or "",
         "metadata": {},
         "editable": False,

@@ -185,6 +185,13 @@ class ArtifactProtocolProvider(ContextProvider):
         return [ARTIFACT_PROTOCOL_INSTRUCTION]
 
 
+# SkillProvider 是 MemoryProvider：技能不是固定 Prompt，而是被检索召回后“存进记忆”
+# （memory 的 "skill" 字段）的内容，再经 Strategy 取出注入。两层召回都写入同一记忆字段：
+#   - 系统检索召回：AgentBase.start() 里 prepare_start 之后自动 store 到 memory["skill"]；
+#   - 工具召回：recall_skill 工具把命中的技能 store 到同一字段。
+# 定义放在动态 Provider 区前，但依赖 MemoryProvider，故置于此（MemoryProvider 已在上方定义）。
+
+
 # 动态provider
 
 class ReActToolFeedbackProvider(MemoryProvider):
@@ -249,5 +256,32 @@ class ErrorProvider(MemoryProvider):
         parts = ["## 上一轮错误（请修正后重试，本提示仅出现一次）"]
         parts += [item.content for item in items]
         return ["\n\n".join(parts)]
+
+
+class SkillProvider(MemoryProvider):
+    """召回技能注入：从 memory 的 "skill" 字段取出已召回的技能块再注入。
+
+    技能作为“记忆”存储（每条技能一个 memory 条目，key=skill_id，content=已格式化的技能块），
+    由系统检索召回（AgentBase._recall_skills）与 recall_skill 工具共同写入。这里只负责取出
+    并格式化；memory 中无技能时输出为空，对未召回的 Agent（如 planner）完全透明。
+    """
+
+    name = "skill"
+
+    def __init__(
+        self,
+        memory:   ShortTermMemory,
+        field:    memory_field = "skill",
+        strategy: ContextStrategy | None = None,
+    ) -> None:
+        super().__init__(memory, field, strategy or FullHistoryStrategy())
+
+    def get(self, state: dict) -> list[str]:
+        items = self._get_items(state)
+        if not items:
+            return []
+        parts = ["## 召回技能（Skills）——可直接参考其中的方法/步骤完成当前任务"]
+        parts += [item.content for item in items if str(item.content or "").strip()]
+        return ["\n\n".join(parts)] if len(parts) > 1 else []
 
 

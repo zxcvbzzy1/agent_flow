@@ -34,9 +34,21 @@ class RunContextProviderPort(Protocol):
         ...
 
 
+class SkillRetrieverPort(Protocol):
+    """Optional retriever for recalling skills (system recall + recall_skill tool).
+
+    返回元素需带 .skill 与 .score（见 domain.skill.retriever.SkillHit）。
+    实现可以是简单向量匹配，也可以后续替换为 RAG 检索器。
+    """
+
+    def retrieve(self, query: str, k: int = 5, threshold: float = 0.0) -> Any:
+        ...
+
+
 _tool_event_observer: ToolEventObserverPort | None = None
 _human_approval_provider: HumanApprovalProviderPort | None = None
 _run_context_provider: RunContextProviderPort | None = None
+_skill_retriever: SkillRetrieverPort | None = None
 
 
 def register_tool_event_observer(observer: ToolEventObserverPort | None) -> None:
@@ -64,3 +76,12 @@ def register_run_context_provider(provider: RunContextProviderPort | None) -> No
 
 def get_run_context_provider() -> RunContextProviderPort | None:
     return _run_context_provider
+
+
+def register_skill_retriever(retriever: SkillRetrieverPort | None) -> None:
+    global _skill_retriever
+    _skill_retriever = retriever
+
+
+def get_skill_retriever() -> SkillRetrieverPort | None:
+    return _skill_retriever

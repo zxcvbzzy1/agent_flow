@@ -18,6 +18,7 @@ from domain.context.providers import (
     HistoryProvider,
     MemoryProvider,
     PinnedContextProvider,
+    SkillProvider,
     StateProvider,
     ToolOutputProvider,
     UserPromptProvider,
@@ -62,6 +63,7 @@ class ContextService:
                 {"provider_id": "error", "name": "错误回灌(一次性)", "params": ["memory_field"]},
                 {"provider_id": "pinned_context", "name": "固定上下文(收藏)", "params": []},
                 {"provider_id": "artifact_protocol", "name": "内联产物协议", "params": []},
+                {"provider_id": "skill", "name": "召回技能", "params": ["memory_field", "strategy_config"]},
                 {"provider_id": "available_tools", "name": "可用工具", "params": ["available_fields", "available_tools"]},
                 {"provider_id": "history", "name": "对话历史", "params": ["memory_field", "strategy_config"]},
                 {"provider_id": "tool_output", "name": "工具反馈", "params": ["memory_field", "strategy_config"]},
@@ -92,6 +94,7 @@ class ContextService:
             "executor": [
                 {"provider_id": "user_prompt", "enabled": True, "params": {}},
                 {"provider_id": "pinned_context", "enabled": True, "params": {}},
+                {"provider_id": "skill", "enabled": True, "params": {"memory_field": "skill", "strategy_config": {"pipeline": [{"type": "full_history"}]}}},
                 {"provider_id": "state", "enabled": True, "params": {}},
                 {"provider_id": "error", "enabled": True, "params": {}},
                 {"provider_id": "available_tools", "enabled": True, "params": {"available_fields": self.DEFAULT_FIELDS}},
@@ -134,6 +137,7 @@ class ContextService:
             "coding": [
                 {"provider_id": "user_prompt", "enabled": True, "params": {}},
                 {"provider_id": "pinned_context", "enabled": True, "params": {}},
+                {"provider_id": "skill", "enabled": True, "params": {"memory_field": "skill", "strategy_config": {"pipeline": [{"type": "full_history"}]}}},
                 {"provider_id": "artifact_protocol", "enabled": True, "params": {}},
                 {
                     "provider_id": "history",
@@ -237,7 +241,7 @@ class ContextService:
         return {"deleted": True, "context_id": context_id, "stats": stats}
 
     def _build_engine(self, record: dict[str, Any]) -> ContextEngine:
-        memory = DefaultShortTermMemory(["tool_respond", "agent_history", "error"])
+        memory = DefaultShortTermMemory(["tool_respond", "agent_history", "error", "skill"])
         providers = [
             provider
             for provider in (
@@ -255,6 +259,10 @@ class ContextService:
         # 错误回灌同样对所有 context 生效：解析失败时下一轮注入一次提醒，无错误时输出为空。
         if not any(isinstance(provider, ErrorProvider) for provider in providers):
             providers.append(ErrorProvider(memory))
+        # 技能召回注入对所有 context 生效（即使旧的持久化配置未声明也自动补一个）；
+        # memory 的 "skill" 字段为空时输出为空，对未召回的 Agent（如 planner）完全透明。
+        if not any(isinstance(provider, SkillProvider) for provider in providers):
+            providers.append(SkillProvider(memory))
         return ContextEngine(providers=providers, memory=memory)
 
     def _build_provider(
@@ -275,6 +283,13 @@ class ContextService:
             return PinnedContextProvider()
         if provider_id == "artifact_protocol":
             return ArtifactProtocolProvider()
+        if provider_id == "skill":
+            strat = params.get("strategy_config")
+            return SkillProvider(
+                memory,
+                params.get("memory_field", "skill"),
+                self._build_strategy_pipeline(strat) if strat else None,
+            )
         if provider_id == "error":
             # 一次性错误回灌，固定使用 ConsumeOnceStrategy，不暴露 strategy 配置。
             return ErrorProvider(memory, params.get("memory_field", "error"))
@@ -318,6 +333,9 @@ class ContextService:
             provider_id = "pinned_context"
         elif isinstance(provider, ArtifactProtocolProvider):
             provider_id = "artifact_protocol"
+        elif isinstance(provider, SkillProvider):
+            provider_id = "skill"
+            params = self._memory_provider_params(provider)
         elif isinstance(provider, ErrorProvider):
             # ErrorProvider 是 MemoryProvider，但策略固定（ConsumeOnce），只回填 memory_field。
             provider_id = "error"

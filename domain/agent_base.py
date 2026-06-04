@@ -82,6 +82,11 @@ class AgentBase(ABC):
         # （reasoning + arguments）。reasoning 不进事件，走 agent-local 关联，避免改 tool/event。
         self._round_think        = ""
         self._pending_reasoning: dict[str, list[dict]] = {}
+        # 技能召回：系统检索召回（start 时自动）默认对执行类 ReACT Agent 开启；
+        # planner 等不走 start() 的 Agent 天然不触发。子类可设 skill_recall_enabled=False 关闭。
+        self.skill_recall_enabled   = True
+        self.skill_recall_k         = 3
+        self.skill_recall_threshold = 0.0
         AgentBase._instance_list[self.id] = self
 
     @classmethod
@@ -92,11 +97,13 @@ class AgentBase(ABC):
 
     async def start(self, prompt: str) -> None:
         self.prepare_start(prompt, keep_history=False)
+        self._recall_skills(prompt)
         await self.run()
         self.store_dialogue_history(self.states.get("prompt", ""), self.states.get("final", ""))
 
     async def start_with_history(self, prompt: str) -> None:
         self.prepare_start(prompt, keep_history=True)
+        self._recall_skills(prompt)
         await self.run()
         self.store_dialogue_history(self.states.get("prompt", ""), self.states.get("final", ""))
 
@@ -332,6 +339,8 @@ class AgentBase(ABC):
     def prepare_start(self, prompt: str, keep_history: bool) -> None:
         memory = self.context_engine.get_memory()
         memory.clear_field("tool_respond")
+        # 技能召回作为"记忆"存储，每轮起始清空后由系统/工具召回重新写入，避免跨轮累积陈旧技能。
+        memory.clear_field("skill")
         if not keep_history:
             memory.clear_field("agent_history")
         self.states["prompt"] = prompt
@@ -356,3 +365,56 @@ class AgentBase(ABC):
 
     def clear_memory(self) -> None:
         self.context_engine.get_memory().clear()
+
+    # ── 技能召回 ──────────────────────────────────────────────────
+
+    def _recall_skills(self, prompt: str) -> None:
+        """系统检索召回：用 prompt 从技能库召回 top-k，写入 state["skills"]。
+
+        检索器经 runtime_hooks 注入（未注册或库为空时静默跳过），SkillProvider
+        负责把 state["skills"] 注入上下文。失败不影响主流程。
+        """
+        if not getattr(self, "skill_recall_enabled", True) or not prompt:
+            return
+        try:
+            from domain.runtime_hooks import get_skill_retriever
+
+            retriever = get_skill_retriever()
+            if retriever is None:
+                return
+            hits = retriever.retrieve(
+                prompt,
+                k=self.skill_recall_k,
+                threshold=self.skill_recall_threshold,
+            )
+            self.merge_recalled_skills(hits, source="system")
+        except Exception as e:  # noqa: BLE001
+            print(f"[skill] {self.id} 系统召回失败: {e}")
+
+    def merge_recalled_skills(self, hits, *, source: str = "system") -> int:
+        """把召回结果(SkillHit 列表)作为“记忆”存进 memory 的 "skill" 字段，按 skill_id 去重。
+
+        每条技能一个 memory 条目（key=skill_id，content=已格式化技能块），SkillProvider
+        经 Strategy 取出注入。供系统召回与 recall_skill 工具共用；返回新增条数。
+        """
+        memory = self.context_engine.get_memory()
+        added = 0
+        for hit in hits or []:
+            skill = getattr(hit, "skill", None)
+            if skill is None:
+                continue
+            # 跨“系统召回 + 工具召回 + 多轮”按 id 去重：已存在则不再重复写入。
+            if memory.count("skill", skill.id) > 0:
+                continue
+            memory.store("skill", skill.id, self._format_skill_block(skill))
+            added += 1
+        return added
+
+    @staticmethod
+    def _format_skill_block(skill) -> str:
+        """把一条技能渲染成注入用的文本块（SkillProvider 直接拼接 item.content）。"""
+        name = str(getattr(skill, "name", "") or getattr(skill, "id", "") or "skill").strip()
+        desc = str(getattr(skill, "description", "") or "").strip()
+        content = str(getattr(skill, "content", "") or "").strip()
+        head = f"### {name}" + (f" — {desc}" if desc else "")
+        return head + ("\n" + content if content else "")

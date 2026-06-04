@@ -7,6 +7,7 @@ memory_field = Literal[
     "tool_respond",
     "agent_history",
     "error",
+    "skill",
 ]
 
 
