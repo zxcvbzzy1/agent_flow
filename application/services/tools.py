@@ -26,6 +26,7 @@ class ToolRegistryService:
         import infra.tool.builtin.artifacts  # noqa: F401
         import infra.tool.builtin.deploy  # noqa: F401
         import infra.tool.builtin.file_tools  # noqa: F401
+        import infra.tool.builtin.diff_editor  # noqa: F401
         import infra.tool.builtin.skill  # noqa: F401
         import infra.tool.tools_attach_methods  # noqa: F401
         # 加载技能文件并把检索器注册到 runtime_hooks（系统召回 + recall_skill 工具共用）。
