@@ -20,6 +20,7 @@ class ToolRegistryService:
         self._upload_dir.mkdir(parents=True, exist_ok=True)
         self.load_builtin_tools()
         self._persist_registered_tools()
+        self._apply_persisted_runtime_config()
 
     def load_builtin_tools(self) -> None:
         import infra.tool.builtin.system  # noqa: F401
@@ -34,6 +35,25 @@ class ToolRegistryService:
         from domain.skill import bootstrap_skills
 
         bootstrap_skills()
+
+    def _apply_persisted_runtime_config(self) -> None:
+        """启动时把 tools 集合里持久化的运行时配置应用到进程内（目前仅 bash 危险命令策略）。
+
+        config 存在 tools 记录的独立 `config` 字段，不会被 _persist_registered_tools 的 $set 覆盖。
+        """
+        try:
+            from infra.tool.builtin import system
+
+            record = self._store.find_one("tools", {"tool_id": "bash"}) or {}
+            cfg = record.get("config") or {}
+            if cfg:
+                system.set_bash_settings(
+                    danger_policy=cfg.get("danger_policy"),
+                    auto_confirm=cfg.get("auto_confirm"),
+                )
+        except Exception:
+            # 配置加载失败不应阻断工具注册；退回默认策略（reject）
+            pass
 
     def list_tools(self) -> list[dict[str, Any]]:
         items = []

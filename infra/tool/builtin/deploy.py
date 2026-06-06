@@ -15,7 +15,7 @@ DEPLOY = Tool(
     field="system",
     description=(
         "后台部署：当用户说'部署'时调用。把一组文件作为静态网页托管，"
-        "或用一条常驻命令(如 uvicorn/flask/node)启动一个后端，分配 127.0.0.1 端口"
+        "或用一条常驻命令(如 uvicorn/flask/node)启动一个后端，分配 0.0.0.0 端口"
         "并返回可预览地址；前端会出现可一键关闭端口的部署卡片。"
     ),
     input_schema={
@@ -51,7 +51,7 @@ DEPLOY = Tool(
                 "type": "string",
                 "description": (
                     "command 模式启动命令，用 $PORT 占位监听端口，"
-                    "例: uvicorn app:app --host 127.0.0.1 --port $PORT"
+                    "例: uvicorn app:app --host 0.0.0.0 --port $PORT"
                 ),
             },
             "env": {"type": "object", "description": "附加环境变量"},

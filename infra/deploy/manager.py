@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 
 # ── 配置常量 ────────────────────────────────────────────────────────
-HOST = "127.0.0.1"
+HOST = "0.0.0.0"
 PORT_RANGE_START = 8200
 PORT_RANGE_END = 8399  # 含
 READY_TIMEOUT = 15.0  # 启动后等待端口可连接的最长秒数

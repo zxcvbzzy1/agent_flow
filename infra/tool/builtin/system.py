@@ -10,6 +10,24 @@ from infra.config import factory, agent_dict,bus
 from infra.tool.common_func import human_approval_service
 
 
+# —— bash 危险命令处理策略（可由工具页 PATCH 热更新；im_backend 与 agent_flow 同进程，set 即时生效）——
+# danger_policy: "reject" 高危命令直接拒绝（原行为，作为可配置项保留）｜ "confirm" 转人工确认
+# auto_confirm:  "ask" 弹窗询问用户 ｜ "approve" 自动批准 ｜ "reject" 自动拒绝（headless/测试用）
+_BASH_SETTINGS: dict[str, str] = {"danger_policy": "reject", "auto_confirm": "ask"}
+
+
+def get_bash_settings() -> dict:
+    return dict(_BASH_SETTINGS)
+
+
+def set_bash_settings(danger_policy: str | None = None, auto_confirm: str | None = None) -> dict:
+    if danger_policy in {"reject", "confirm"}:
+        _BASH_SETTINGS["danger_policy"] = danger_policy
+    if auto_confirm in {"ask", "approve", "reject"}:
+        _BASH_SETTINGS["auto_confirm"] = auto_confirm
+    return get_bash_settings()
+
+
 BASH = Tool(
     name="bash",
     description="""执行 bash 命令，执行前会审核高危命令和工作路径，返回 stdout、stderr 和退出码。
@@ -25,7 +43,9 @@ BASH = Tool(
         },
         "required": ["command"]
     },
-    # metadata={"require_human_confirm": True},
+    # 始终经人机协作中间件：human.bash 处理器对「安全命令」直接放行，仅对「高危命令」按
+    # danger_policy 决定 拒绝 / 转人工确认。策略在处理器内运行时读取，可热更新。
+    metadata={"require_human_confirm": True},
 )
 
 class SystemTool():
@@ -230,13 +250,17 @@ class SystemTool():
             and not name[0].isdigit()
         )
 
-    #统一检验    
+    #统一检验
     def audit_bash(self, command: str) -> tuple[bool, str, Path]:
-        allowed, reason = self.audit_high_risk_command(command)
-        if not allowed:
-            return False, reason, self.working_directory
+        # 高危命令策略（保留原「直接拒绝」逻辑，改为参数配置 danger_policy）：
+        # - reject：工具层直接拒绝高危命令（与人机协作中间件双重保障；即使中间件未生效也不放过）。
+        # - confirm：是否执行由中间件按用户确认决定，这里放行，否则被用户确认通过的高危命令会被二次拒绝。
+        if get_bash_settings().get("danger_policy", "reject") == "reject":
+            allowed, reason = self.audit_high_risk_command(command)
+            if not allowed:
+                return False, reason, self.working_directory
 
-        # 工作路径检验
+        # 工作路径检验（当前关闭）
         # allowed, reason = self.audit_working_directory(command)
         # if not allowed:
         #     return False, reason, self.working_directory
@@ -304,41 +328,48 @@ def exec_bash(**kwargs)->Event:
             )
         return factory.tool("bash").succeeded(tool_respond)
 
+def _confirmed(approved: bool, reason: str) -> Event:
+    return Event("human.bash.confirmed", payload={"approved": approved, "reason": reason})
+
+
 @on_tool.on(Event("human.bash"))
 async def confirm(**kwargs) -> Event:
+    """人机协作中间件对每次 bash 调用都会经过这里。
+
+    安全命令直接放行（不打扰用户、不发确认事件）；只有高危命令才按 danger_policy 决策：
+    reject → 直接拒绝（原行为）；confirm → 按 auto_confirm 自动批准/拒绝，或弹窗询问用户。
+    """
     arguments = kwargs.get("arguments", {})
     command = arguments.get("command", "")
     agent_id = arguments.get("agent_id", "")
 
-    auto_confirm = os.getenv("AGENT_FLOW_AUTO_CONFIRM", "").lower()
-    if auto_confirm in {"1", "true", "yes", "y"}:
-        return Event(
-            "human.bash.confirmed",
-            payload={
-                "approved": True,
-                "reason": "环境变量 AGENT_FLOW_AUTO_CONFIRM 已自动确认",
-            },
-        )
-    if auto_confirm in {"0", "false", "no", "n"}:
-        return Event(
-            "human.bash.confirmed",
-            payload={
-                "approved": False,
-                "reason": "环境变量 AGENT_FLOW_AUTO_CONFIRM 已拒绝执行",
-            },
-        )
+    # 仅对高危命令需要决策；audit_high_risk_command 不依赖工作目录，传占位路径即可
+    allowed, _reason = SystemTool(working_directory=".").audit_high_risk_command(command)
+    if allowed:
+        return _confirmed(True, "非高危命令，自动放行")
 
-    print("\n[HUMAN CONFIRM] bash 工具请求执行：")
-    print(f"agent_id: {agent_id}")
-    print(f"command: {command}")
+    settings = get_bash_settings()
+    policy = settings.get("danger_policy", "reject")
+
+    # 策略一：直接拒绝（原行为，保留为可配置项）
+    if policy != "confirm":
+        return _confirmed(False, f"高危命令按当前策略（{policy}）直接拒绝执行")
+
+    # 策略二：人工确认。环境变量优先（headless），其次工具页 auto_confirm 配置
+    env_auto = os.getenv("AGENT_FLOW_AUTO_CONFIRM", "").lower()
+    auto = settings.get("auto_confirm", "ask")
+    if env_auto in {"1", "true", "yes", "y"} or auto == "approve":
+        return _confirmed(True, "高危命令自动批准（auto_confirm=approve）")
+    if env_auto in {"0", "false", "no", "n"} or auto == "reject":
+        return _confirmed(False, "高危命令自动拒绝（auto_confirm=reject）")
+
+    # auto == "ask"：通过 human_approval_service 弹出 Web 确认（_human_input_context 已由中间件设置）
+    print(f"\n[HUMAN CONFIRM] 高危 bash 命令请求执行：agent_id={agent_id} command={command}")
     answer = (
-        await human_approval_service.input("是否允许执行该命令？输入 yes/y 允许，其它输入拒绝: ")
+        await human_approval_service.input(f"高危命令待确认：{command}\n是否允许执行？输入 yes/y 允许，其它拒绝: ")
     ).strip().lower()
     approved = answer in {"yes", "y"}
-    return Event(
-        "human.bash.confirmed",
-        payload={
-            "approved": approved,
-            "reason": "用户确认执行 bash 命令" if approved else f"用户拒绝执行 bash 命令，{answer}",
-        },
+    return _confirmed(
+        approved,
+        "用户确认执行高危命令" if approved else f"用户拒绝执行高危命令，{answer}",
     )

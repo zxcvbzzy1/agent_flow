@@ -345,7 +345,15 @@ def revert_version(agent_id: str, file_path: str, version: int) -> dict[str, Any
     new_version = _record_version(
         work_path, abs_path, file_path, content, _sha256(current), uuid.uuid4().hex, note=f"回退到 v{version}"
     )
-    return {"status": "applied", "file_path": file_path, "version": new_version, "reverted_to": int(version)}
+    # 回传回退后的内容，前端据此刷新卡片正文（props.artifact 是静态 SSE 快照，不会自动更新）
+    return {
+        "status": "applied",
+        "file_path": file_path,
+        "version": new_version,
+        "reverted_to": int(version),
+        "content": content,
+        "applied_sha": _sha256(content),
+    }
 
 
 # ---------------------------------------------------------------------------
