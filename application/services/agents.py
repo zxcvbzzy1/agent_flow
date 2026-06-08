@@ -232,12 +232,24 @@ class AgentFactoryService:
             "agents": self._store.delete_one("agents", {"agent_id": agent_id}),
             "runs": 0,
             "events": 0,
+            "contexts": 0,
         }
         self._agents.pop(agent_id, None)
 
         for run_id in run_ids:
             stats["runs"] += self._store.delete_many("runs", {"run_id": run_id})
             stats["events"] += self._store.delete_many("events", {"run_id": run_id})
+
+        # 删除该 Agent 独占的上下文（创建时按模版克隆，与 Agent 1:1 绑定），避免删 Agent 后 contexts 残留。
+        # 先删 Agent 记录与其 runs 再删上下文：delete_context 自带保护/引用校验——默认上下文、
+        # 仍被其它 Agent 或 run 引用的上下文会抛错，这里吞掉以不阻断 Agent 删除（共享/受保护上下文不应随单个 Agent 删除）。
+        context_id = record.get("context_id", "")
+        if context_id:
+            try:
+                ctx_result = self._contexts.delete_context(context_id)
+                stats["contexts"] += int((ctx_result.get("stats") or {}).get("contexts", 0))
+            except (KeyError, ValueError):
+                pass
 
         return {"deleted": True, "agent_id": agent_id, "stats": stats}
 
