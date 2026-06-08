@@ -76,6 +76,19 @@ class DocumentStore:
             docs.sort(key=lambda item: item.get(key, 0), reverse=direction < 0)
         return docs[:limit] if limit else docs
 
+    def ensure_index(self, collection: str, keys: list[tuple[str, int]], **kwargs: Any) -> None:
+        """在 Mongo 上建索引（幂等，已存在则忽略）；内存兜底为 no-op。
+
+        懒加载窗口查询按 (conversation_id/room_id 等值) + (created_at 范围/排序) 命中，
+        建好对应复合索引后只触达窗口内文档，避免整会话扫描，真正降低 DB 压力。
+        """
+        if self._db is None:
+            return
+        try:
+            self._db[collection].create_index(keys, **kwargs)
+        except PyMongoError:
+            pass
+
     def update_one(
         self,
         collection: str,
@@ -138,4 +151,39 @@ class DocumentStore:
         return document
 
     def _matches(self, document: dict[str, Any], query: dict[str, Any]) -> bool:
-        return all(document.get(key) == value for key, value in query.items())
+        return all(self._match_field(document.get(key), condition) for key, condition in query.items())
+
+    def _match_field(self, value: Any, condition: Any) -> bool:
+        # 仅当 condition 是非空、且键全部以 $ 开头的字典时按操作符处理；
+        # 否则按普通相等匹配（含对普通 dict 值的整体相等比较，保持原行为）。
+        if isinstance(condition, dict) and condition and all(str(k).startswith("$") for k in condition):
+            for op, operand in condition.items():
+                if op == "$lt":
+                    if value is None or not value < operand:
+                        return False
+                elif op == "$lte":
+                    if value is None or not value <= operand:
+                        return False
+                elif op == "$gt":
+                    if value is None or not value > operand:
+                        return False
+                elif op == "$gte":
+                    if value is None or not value >= operand:
+                        return False
+                elif op == "$ne":
+                    if value == operand:
+                        return False
+                elif op == "$in":
+                    if value not in (operand or []):
+                        return False
+                elif op == "$nin":
+                    if value in (operand or []):
+                        return False
+                elif op == "$exists":
+                    if bool(operand) != (value is not None):
+                        return False
+                else:
+                    # 未支持的操作符：保守地判为不匹配，避免静默误命中。
+                    return False
+            return True
+        return value == condition
