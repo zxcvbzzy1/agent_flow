@@ -144,6 +144,40 @@ class AgentFactoryService:
         self._agents[agent_id] = self._build_agent(record)
         return record
 
+    def update_agent(
+        self,
+        agent_id: str,
+        *,
+        name: str | None = None,
+        role_prompt: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """就地更新 Agent 的 name / role_prompt / metadata 并重建缓存实例。
+
+        agent_type / context_id 不在此变更（会牵动上下文重新置备，属高风险操作）。metadata 由调用方
+        负责合并好整体传入（store.update_one 对 metadata 字段是整体覆盖而非深合并）。重建 _agents
+        缓存实例，使新的 role_prompt / 引擎（工具变更后）对随后复用该实例的直聊立即生效。
+        """
+        if agent_id in self.PROTECTED_AGENT_IDS:
+            raise ValueError("默认 Agent 不允许编辑")
+        record = self.get_agent_record(agent_id)
+        if record is None:
+            raise KeyError(f"Agent 不存在: {agent_id}")
+        updates: dict[str, Any] = {}
+        if name is not None:
+            if not name.strip():
+                raise ValueError("Agent 名称不能为空")
+            updates["name"] = name.strip()
+        if role_prompt is not None:
+            updates["role_prompt"] = role_prompt
+        if metadata is not None:
+            updates["metadata"] = metadata
+        if updates:
+            self._store.update_one("agents", {"agent_id": agent_id}, updates)
+        new_record = self.get_agent_record(agent_id)
+        self._agents[agent_id] = self._build_agent(new_record)
+        return new_record
+
     def create_agent_from_instance(
         self,
         agent: AgentBase | PlanAgent,

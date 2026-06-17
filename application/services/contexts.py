@@ -229,6 +229,28 @@ class ContextService:
             raise KeyError(f"上下文不存在: {context_id}")
         return self._build_engine(record)
 
+    def update_context_providers(
+        self, context_id: str, provider_config: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """覆盖某个上下文的 provider_config 并失效其引擎缓存。
+
+        供「编辑 Agent 工具」等场景使用：写回新的 provider_config 后必须 pop 掉 _engines 缓存，
+        否则 get_engine 仍返回旧引擎（available_tools 等不会生效）；下次 get_engine / build_engine
+        会按新配置重建。
+        """
+        record = self._store.find_one("contexts", {"context_id": context_id})
+        if record is None:
+            raise KeyError(f"上下文不存在: {context_id}")
+        if not provider_config:
+            raise ValueError("provider_config 不能为空")
+        self._store.update_one(
+            "contexts",
+            {"context_id": context_id},
+            {"provider_config": copy.deepcopy(provider_config)},
+        )
+        self._engines.pop(context_id, None)
+        return self._with_overview(self._store.find_one("contexts", {"context_id": context_id}))
+
     def delete_context(self, context_id: str) -> dict[str, Any]:
         if context_id in self.PROTECTED_CONTEXT_IDS:
             raise ValueError("默认 ContextEngine 不允许删除")

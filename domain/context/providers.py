@@ -185,12 +185,6 @@ class ArtifactProtocolProvider(ContextProvider):
         return [ARTIFACT_PROTOCOL_INSTRUCTION]
 
 
-# SkillProvider 是 MemoryProvider：技能不是固定 Prompt，而是被检索召回后“存进记忆”
-# （memory 的 "skill" 字段）的内容，再经 Strategy 取出注入。两层召回都写入同一记忆字段：
-#   - 系统检索召回：AgentBase.start() 里 prepare_start 之后自动 store 到 memory["skill"]；
-#   - 工具召回：recall_skill 工具把命中的技能 store 到同一字段。
-# 定义放在动态 Provider 区前，但依赖 MemoryProvider，故置于此（MemoryProvider 已在上方定义）。
-
 
 # 动态provider
 
@@ -256,6 +250,14 @@ class ErrorProvider(MemoryProvider):
         parts = ["## 上一轮错误（请修正后重试，本提示仅出现一次）"]
         parts += [item.content for item in items]
         return ["\n\n".join(parts)]
+
+
+# SkillProvider 是 MemoryProvider：技能不是固定 Prompt，而是被检索召回后“存进记忆”
+# （memory 的 "skill" 字段）的内容，再经 Strategy 取出注入。两层召回都写入同一记忆字段：
+#   - 系统检索召回：AgentBase.start() 里 prepare_start 之后自动 store 到 memory["skill"]；
+#   - 工具召回：recall_skill 工具把命中的技能 store 到同一字段。
+# 定义放在动态 Provider 区前，但依赖 MemoryProvider，故置于此（MemoryProvider 已在上方定义）。
+
 
 
 class SkillProvider(MemoryProvider):
