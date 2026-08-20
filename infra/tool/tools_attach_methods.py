@@ -86,6 +86,7 @@ async def on_tool_fail(**kwargs):  # event.playload为Tool_respond类，kwargs�
         respond=kwargs.get("respond"),
     )
     return EventBusReturn(agent_id=agent_id, src_object=event, results="工具调用失败事件处理完成", success=False)
+
 # @on_tool.on(factory.tool("query_tool_respond").succeeded({}))
 # async def on_query_tool_respond_tool_successed(**kwargs):  
 #     agent_id = kwargs.get("agent_id")

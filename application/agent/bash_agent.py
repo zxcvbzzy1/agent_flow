@@ -59,7 +59,7 @@ operator_context = ContextEngine(
         ErrorProvider(operator_memory),
         AvailableToolsProvider(["system"]),
         HistoryProvider(operator_memory, "agent_history", FullHistoryStrategy()),
-        ToolOutputProvider(operator_memory, "tool_respond", FullHistoryStrategy() | RecencyStrategy(5)),
+        ToolOutputProvider(operator_memory, "tool_respond", FullHistoryStrategy() | RecencyStrategy(50)),
     ],
     memory=operator_memory,
 )

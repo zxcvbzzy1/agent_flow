@@ -41,7 +41,7 @@ default_retriever = VectorSkillRetriever(default_registry)
 _bootstrapped = False
 
 
-def bootstrap_skills(skills_dir=None, *, force: bool = False) -> VectorSkillRetriever:
+def bootstrap_skills(skills_dir=None, *, force: bool = False) -> BaseSkillRetriever:
     """加载技能文件并把 default_retriever 注册到 runtime_hooks（幂等）。
 
     在工具加载阶段调用一次即可（见 application/services/tools.py）。无技能目录时
