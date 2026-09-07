@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from pymongo.errors import PyMongoError
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
@@ -31,6 +33,10 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
+    @app.exception_handler(PyMongoError)
+    async def database_unavailable(request, exc):
+        return JSONResponse(status_code=503, content={"detail": "数据库不可用，请稍后重试"})
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
@@ -48,9 +54,10 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health():
         container = get_container()
+        container.store.ping()
         return {
             "status": "ok",
-            "mongo": "memory" if container.store.using_memory else "mongodb",
+            "mongo": "mongodb",
         }
 
     return app
