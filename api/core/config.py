@@ -8,7 +8,7 @@ from dataclasses import dataclass
 class APISettings:
     app_name: str = "Agent Flow API"
     mongo_url: str = os.getenv("AGENT_FLOW_MONGO_URL", "mongodb://localhost:27017/")
-    mongo_db: str = os.getenv("AGENT_FLOW_MONGO_DB", "agent_flow")
+    mongo_db: str = os.getenv("AGENT_FLOW_MONGO_DB", "agent_flow_2")
     cors_origins: tuple[str, ...] = tuple(
         origin.strip()
         for origin in os.getenv(
