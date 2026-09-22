@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import Header, APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from api.core.dependencies import (
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/runs", tags=["runs"])
 
 @router.get("")
 async def list_runs(service: RunOrchestrationService = Depends(get_run_service)):
-    return {"items": service.list_runs()}
+    return {"items": await service.list_runs()}
 
 
 @router.post("")
@@ -28,7 +28,7 @@ async def create_run(
     service: RunOrchestrationService = Depends(get_run_service),
 ):
     try:
-        item = service.create_run(
+        item = await service.create_run(
             prompt=request.prompt,
             mode=request.mode,
             executor_agent_id=request.executor_agent_id,
@@ -52,19 +52,19 @@ async def get_run(
     run_id: str,
     service: RunOrchestrationService = Depends(get_run_service),
 ):
-    item = service.get_run(run_id)
+    item = await service.get_run(run_id)
     if item is None:
         raise HTTPException(status_code=404, detail="run not found")
     return {"item": item}
 
 
-@router.post("/{run_id}/cancel")
+@router.post("/{run_id}/cancel", status_code=202)
 async def cancel_run(
     run_id: str,
     service: RunOrchestrationService = Depends(get_run_service),
 ):
     try:
-        item = service.cancel_run(run_id)
+        item = await service.cancel_run(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"item": item}
@@ -73,10 +73,11 @@ async def cancel_run(
 @router.get("/{run_id}/events")
 async def stream_run_events(
     run_id: str,
+    last_event_id: str | None = Header(default=None),
     service: EventStreamService = Depends(get_event_service),
 ):
     return StreamingResponse(
-        service.stream(run_id),
+        service.stream(run_id, last_id=last_event_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
@@ -87,7 +88,7 @@ async def list_run_confirmations(
     run_id: str,
     service: HumanConfirmationService = Depends(get_human_confirmation_service),
 ):
-    return {"items": service.list_pending(run_id)}
+    return {"items": await service.list_pending(run_id)}
 
 
 @router.post("/{run_id}/confirmations/{confirmation_id}")
@@ -98,7 +99,7 @@ async def resolve_run_confirmation(
     service: HumanConfirmationService = Depends(get_human_confirmation_service),
 ):
     try:
-        item = service.resolve(
+        item = await service.resolve(
             run_id=run_id,
             confirmation_id=confirmation_id,
             approved=request.approved,

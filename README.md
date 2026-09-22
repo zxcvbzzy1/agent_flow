@@ -582,3 +582,13 @@ infra/
     tools_attach_methods.py        # 通用中间件与工具成功/失败回调
     common_func.py                 # 工具事件辅助函数
 ```
+
+## Redis 运行时
+
+事件服务使用 `redis.asyncio` 和 Redis Streams，配置为 `REDIS_URL`、`REDIS_KEY_PREFIX`
+（参见根目录 `redis.env.example`）。`publish()` / `no_store_publish()` 以及运行创建、
+查询和取消均为异步接口。工具内部事件总线保持原有机制；前端镜像需要等待 Redis 写入。
+
+`GET /api/runs/{run_id}/events` 支持 `Last-Event-ID`，不会在第一条终态历史事件处结束，
+而是保持连接并发送心跳。非增量历史仍保留在 Mongo，当前运行状态在 Redis。
+部署、续传和验证方式见 [IM 后端说明](../im_backend/README.md#redis-运行时第一阶段)。

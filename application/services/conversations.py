@@ -7,8 +7,9 @@ from infra.db.mongodb import DocumentStore
 
 
 class ConversationService:
-    def __init__(self, store: DocumentStore) -> None:
+    def __init__(self, store: DocumentStore, runtime=None) -> None:
         self._store = store
+        self.runtime = runtime
 
     def create_conversation(
         self,
@@ -29,7 +30,7 @@ class ConversationService:
     def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
         return self._store.find_one("conversations", {"conversation_id": conversation_id})
 
-    def delete_conversation(self, conversation_id: str) -> dict[str, Any]:
+    async def delete_conversation(self, conversation_id: str) -> dict[str, Any]:
         conversation = self.get_conversation(conversation_id)
         if conversation is None:
             raise KeyError(f"会话不存在: {conversation_id}")
@@ -49,10 +50,12 @@ class ConversationService:
             "events": 0,
         }
         for run_id in run_ids:
+            if self.runtime:
+                await self.runtime.delete_runtime(run_id)
             stats["events"] += self._store.delete_many("events", {"run_id": run_id})
         return {"deleted": True, "conversation_id": conversation_id, "stats": stats}
 
-    def add_message(
+    async def add_message(
         self,
         conversation_id: str,
         role: str,

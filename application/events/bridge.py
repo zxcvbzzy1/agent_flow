@@ -49,10 +49,10 @@ class FrontendEventBridge:
             return run_id
         return self._agent_runs.get(agent_id, "")
 
-    def on_tool_event(self, event: Event) -> None:
-        self.mirror_tool_event(event)
+    async def on_tool_event(self, event: Event) -> None:
+        await self.mirror_tool_event(event)
 
-    def mirror_tool_event(self, event: Event) -> None:
+    async def mirror_tool_event(self, event: Event) -> None:
         frontend_event_name = self._frontend_tool_event_name(event.name)
         if not frontend_event_name:
             return
@@ -73,7 +73,7 @@ class FrontendEventBridge:
                 "artifact": payload.get("artifact", {}),
                 "created_at": payload.get("created_at", time.time()),
             }
-            self._streams.publish(run_id, frontend_event_name, mirrored)
+            await self._streams.publish(run_id, frontend_event_name, mirrored)
             return
 
         tool_name = payload.get("tool_name", "")
@@ -94,7 +94,7 @@ class FrontendEventBridge:
             frontend_event_name=frontend_event_name,
             payload=payload,
         )
-        self._streams.publish(run_id, frontend_event_name, mirrored)
+        await self._streams.publish(run_id, frontend_event_name, mirrored)
 
     def _frontend_tool_event_name(self, internal_name: str) -> str:
         if internal_name.startswith("artifacts."):

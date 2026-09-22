@@ -41,7 +41,7 @@ async def delete_agent(
     service: AgentFactoryService = Depends(get_agent_service),
 ):
     try:
-        return {"item": service.delete_agent(agent_id)}
+        return {"item": await service.delete_agent(agent_id)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

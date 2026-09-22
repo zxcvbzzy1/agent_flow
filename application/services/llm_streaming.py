@@ -34,7 +34,7 @@ class StreamingObservableLLMClient:
         full_response = ""
 
         if run_id:
-            self._publish(
+            await self._publish(
                 run_id,
                 "llm.started",
                 {
@@ -48,7 +48,7 @@ class StreamingObservableLLMClient:
             full_response += delta
             sequence += 1
             if run_id:
-                self._sse_publish(
+                await self._sse_publish(
                     run_id,
                     "llm.delta",
                     {
@@ -59,7 +59,7 @@ class StreamingObservableLLMClient:
                 )
 
         if run_id:
-            self._publish(
+            await self._publish(
                 run_id,
                 "llm.completed",
                 {
@@ -68,7 +68,7 @@ class StreamingObservableLLMClient:
                     "token_chunks": sequence,
                 },
             )
-            self._publish_structured(run_id, call_role, full_response)
+            await self._publish_structured(run_id, call_role, full_response)
 
         return full_response
 
@@ -78,8 +78,8 @@ class StreamingObservableLLMClient:
             return ""
         return provider.run_id_for_agent(self.agent_id)
 
-    def _publish(self, run_id: str, name: str, payload: dict[str, Any]) -> None:
-        self._streams.publish(
+    async def _publish(self, run_id: str, name: str, payload: dict[str, Any]) -> None:
+        await self._streams.publish(
             run_id,
             name,
             {
@@ -91,8 +91,8 @@ class StreamingObservableLLMClient:
             },
         )
 
-    def _sse_publish(self, run_id: str, name: str, payload: dict[str, Any]) -> None:
-        self._streams.no_store_publish(
+    async def _sse_publish(self, run_id: str, name: str, payload: dict[str, Any]) -> None:
+        await self._streams.no_store_publish(
             run_id,
             name,
             {
@@ -104,27 +104,27 @@ class StreamingObservableLLMClient:
             },
         )
 
-    def _publish_structured(self, run_id: str, call_role: str, raw: str) -> None:
+    async def _publish_structured(self, run_id: str, call_role: str, raw: str) -> None:
         if self.agent_type == "planner":
-            self._publish_planner_structured(run_id, call_role, raw)
+            await self._publish_planner_structured(run_id, call_role, raw)
             return
-        self._publish_executor_structured(run_id, raw)
+        await self._publish_executor_structured(run_id, raw)
 
-    def _publish_executor_structured(self, run_id: str, raw: str) -> None:
+    async def _publish_executor_structured(self, run_id: str, raw: str) -> None:
         data = self._parse_json(raw)
         if data is None:
-            self._publish(run_id, "agent.think", {"think": raw})
+            await self._publish(run_id, "agent.think", {"think": raw})
             return
 
         think = data.get("think", "")
         if think:
-            self._publish(run_id, "agent.think", {"think": think})
+            await self._publish(run_id, "agent.think", {"think": think})
 
         for tool_call in data.get("tool_calls", []) or []:
             reasoning = tool_call.get("reasoning", "")
             if not reasoning:
                 continue
-            self._publish(
+            await self._publish(
                 run_id,
                 "agent.tool.reasoning",
                 {
@@ -135,7 +135,7 @@ class StreamingObservableLLMClient:
             )
 
         if data.get("is_finished"):
-            self._publish(
+            await self._publish(
                 run_id,
                 "agent.final",
                 {
@@ -144,16 +144,16 @@ class StreamingObservableLLMClient:
                 },
             )
 
-    def _publish_planner_structured(self, run_id: str, call_role: str, raw: str) -> None:
+    async def _publish_planner_structured(self, run_id: str, call_role: str, raw: str) -> None:
         data = self._parse_json(raw)
         if call_role == "plan_summary":
-            self._publish(run_id, "planner.final", {"planner_id": self.agent_id, "final": raw})
+            await self._publish(run_id, "planner.final", {"planner_id": self.agent_id, "final": raw})
             return
         if data is None:
             return
 
         if call_role == "plan_replan":
-            self._publish(
+            await self._publish(
                 run_id,
                 "planner.replan.reasoning",
                 {
@@ -167,7 +167,7 @@ class StreamingObservableLLMClient:
             return
 
         if "steps" in data:
-            self._publish(
+            await self._publish(
                 run_id,
                 "planner.plan.generated",
                 {

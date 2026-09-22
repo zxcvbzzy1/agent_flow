@@ -30,7 +30,7 @@ class RecordingEventBus(EventBusPort):
         return events[0] if events else None
 
     async def publish(self, event: Event) -> list[Any]:
-        self._streams.publish(self._run_id, event.name, event.unpack())
+        await self._streams.publish(self._run_id, event.name, event.unpack())
         return [event]
 
     def subscribe(self, event_name: str, handler) -> None:
@@ -44,12 +44,16 @@ class ObservablePlanOrchestrator(PlanOrchestrator):
         self._reported_failed_steps: set[str] = set()
         super().__init__(*args, **kwargs)
 
-    def _dispatch(self, action: dict) -> None:
-        super()._dispatch(action)
+    async def _dispatch(self, action: dict) -> None:
+        await super()._dispatch(action)
         event_name = action.get("event_dispatch", "workflow.event")
         payload = self._normalize_payload(action.get("playload", {}))
-        self._streams.publish(self._run_id, event_name, payload)
-        self._publish_failed_steps(payload)
+        await self._streams.runtime.put_state("orchestration", self._run_id,
+                                             {"plan": self.state.plan, "executors": self.state.executors})
+        # The service emits the terminal event after durable finalization.
+        if event_name != "workflow.finished":
+            await self._streams.publish(self._run_id, event_name, payload)
+        await self._publish_failed_steps(payload)
 
     def _normalize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = {}
@@ -63,7 +67,7 @@ class ObservablePlanOrchestrator(PlanOrchestrator):
     async def _run_plan_step(self, step, plan) -> None:
         await super()._run_plan_step(step, plan)
         if step.status == "failed":
-            self._streams.publish(
+            await self._streams.publish(
                 self._run_id,
                 "agent.failed",
                 step_failed_payload(
@@ -73,7 +77,7 @@ class ObservablePlanOrchestrator(PlanOrchestrator):
                 ),
             )
 
-    def _publish_failed_steps(self, payload: dict[str, Any]) -> None:
+    async def _publish_failed_steps(self, payload: dict[str, Any]) -> None:
         steps = payload.get("plan", {}).get("steps", [])
         for step in steps:
             if step.get("status") != "failed":
@@ -82,7 +86,7 @@ class ObservablePlanOrchestrator(PlanOrchestrator):
             if not step_id or step_id in self._reported_failed_steps:
                 continue
             self._reported_failed_steps.add(step_id)
-            self._streams.publish(
+            await self._streams.publish(
                 self._run_id,
                 "plan.step.failed",
                 step_failed_payload(
@@ -108,8 +112,20 @@ class RunOrchestrationService:
         self._streams = streams
         self._frontend_bridge = frontend_bridge
         self._tasks: dict[str, asyncio.Task] = {}
+        self.runtime = streams.runtime
+        self.runtime.on_orphan = self.handle_orphan
 
-    def create_run(
+    async def handle_orphan(self, state):
+        if state["kind"] != "orchestration":
+            return
+        await self._mark_run_cancelled(state, "执行进程失联，运行中断", True)
+        for item in await self.runtime.confirmations(state["target_id"]):
+            resolved, changed = await self.runtime.resolve_confirmation(
+                item["run_id"], item["confirmation_id"], False, "执行进程失联")
+            if changed:
+                await self._streams.publish(item["run_id"], "human.confirmation.resolved", resolved)
+
+    async def create_run(
         self,
         prompt: str,
         mode: str = "plan",
@@ -163,11 +179,36 @@ class RunOrchestrationService:
             "finished_at": None,
         }
         self._store.insert_one("runs", record)
+        await self.runtime.put_state("orchestration", run_id, {**record, "owner_worker": ""})
         if auto_start:
-            task = asyncio.create_task(self._execute_run(record))
-            self._tasks[run_id] = task
-            task.add_done_callback(lambda _task, rid=run_id: self._tasks.pop(rid, None))
-        return record
+            await self.start_run(run_id)
+        return await self.get_run(run_id)
+
+    async def start_run(self, run_id):
+        record = await self.get_run(run_id)
+        if record is None:
+            raise KeyError(run_id)
+        if record.get("status") in {"finished", "failed", "cancelled"}:
+            return record
+        if not await self.runtime.claim("orchestration", run_id, record):
+            return record
+        task = asyncio.create_task(self._execute_run(record))
+        self._tasks[run_id] = task
+        self.runtime.track("orchestration", run_id, task)
+        task.add_done_callback(lambda finished, rid=run_id: self._tasks.pop(rid, None)
+                               if self._tasks.get(rid) is finished else None)
+        return await self.get_run(run_id)
+
+    async def _update_run(self, run_id, changes):
+        if changes.get("status") in {"finished", "failed", "cancelled"}:
+            changes = {**changes, "cancel_requested": False}
+        await self.runtime.put_state("orchestration", run_id, changes)
+        item = self._store.update_one("runs", {"run_id": run_id}, changes)
+        # IM messages remain the durable history projection.
+        for message in self._store.find_many("im_messages", {"run_id": run_id, "sender_type": "user"}):
+            self._store.update_one("im_messages", {"message_id": message["message_id"]},
+                                   {"status": changes.get("status", message.get("status"))})
+        return item
 
     def _validate_planner(self, planner_agent_id: str) -> None:
         planner_record = self._agents.get_agent_record(planner_agent_id)
@@ -183,52 +224,46 @@ class RunOrchestrationService:
         if executor_record.get("agent_type") != "executor":
             raise ValueError(f"executor_agent_id 必须指向 executor agent: {executor_agent_id}")
 
-    def list_runs(self) -> list[dict[str, Any]]:
-        return self._store.find_many("runs", sort=[("created_at", -1)])
+    async def list_runs(self):
+        records = self._store.find_many("runs", sort=[("created_at", -1)])
+        return [{**r, **(await self.runtime.get_state("orchestration", r["run_id"]) or {})} for r in records]
 
-    def get_run(self, run_id: str) -> dict[str, Any] | None:
-        return self._store.find_one("runs", {"run_id": run_id})
+    async def get_run(self, run_id):
+        record = self._store.find_one("runs", {"run_id": run_id})
+        current = await self.runtime.get_state("orchestration", run_id)
+        return {**(record or {}), **(current or {})} if record or current else None
 
-    def cancel_run(self, run_id: str, reason: str = "用户中断") -> dict[str, Any]:
-        record = self.get_run(run_id)
+    async def cancel_run(self, run_id, reason="用户中断"):
+        record = await self.get_run(run_id)
         if record is None:
             raise KeyError(f"Run 不存在: {run_id}")
-        if record.get("status") in {"finished", "failed", "cancelled"}:
+        if record.get("status") not in {"pending", "running"}:
             return record
-
-        task = self._tasks.get(run_id)
-        if task is not None and not task.done():
-            task.cancel()
-
-        return self._mark_run_cancelled(record, reason=reason, publish=True)
+        if not await self.runtime.get_state("orchestration", run_id):
+            await self.runtime.put_state("orchestration", run_id, {**record, "owner_worker": ""})
+        if not record.get("owner_worker"):
+            return await self._mark_run_cancelled(record, reason, True)
+        return await self.runtime.request_cancel("orchestration", run_id)
 
     async def _execute_run(self, record: dict[str, Any]) -> None:
         run_id = record["run_id"]
         # per-run 隔离：把 run_id 绑定到 contextvar，供工具事件镜像在缺失 run_id 时按当前 run 解析，
         # 避免并发 run 下 agent_id -> run_id 全局映射 last-writer-wins 串扰。finally 中 reset。
         token = current_run_id.set(run_id)
-        self._store.update_one(
-            "runs",
-            {"run_id": run_id},
-            {"status": "running", "started_at": time.time()},
-        )
         try:
+            await self._update_run(run_id, {"status": "running", "started_at": time.time()})
             if record.get("mode") == "react":
                 await self._execute_react_run(record)
             else:
                 await self._execute_plan_run(record)
         except asyncio.CancelledError:
-            current = self.get_run(run_id) or record
+            current = (await self.get_run(run_id)) or record
             if current.get("status") != "cancelled":
-                self._mark_run_cancelled(record, reason="用户中断", publish=True)
+                await self._mark_run_cancelled(record, reason="用户中断", publish=True)
             raise
         except Exception as exc:
-            self._store.update_one(
-                "runs",
-                {"run_id": run_id},
-                {"status": "failed", "error": str(exc), "finished_at": time.time()},
-            )
-            self._streams.publish(run_id, "workflow.failed", {"error": str(exc)})
+            await self._update_run(run_id, {"status": "failed", "error": str(exc), "finished_at": time.time()})
+            await self._streams.publish(run_id, "workflow.failed", {"run_id": run_id, "error": str(exc)})
         finally:
             self._frontend_bridge.unregister_agent_run(record.get("planner_agent_id", ""), run_id)
             for executor_id in record.get("executor_agent_ids", []):
@@ -247,7 +282,7 @@ class RunOrchestrationService:
         self._frontend_bridge.register_agent_run(executor.id, run_id)
         self._load_conversation_history(executor, record)
         self._apply_pinned_context(executor, record)
-        self._streams.publish(
+        await self._streams.publish(
             run_id,
             "workflow.started",
             {"run_id": run_id, "mode": "react", "prompt": record["prompt"], "executor_id": executor_id},
@@ -255,18 +290,14 @@ class RunOrchestrationService:
         await executor.start_with_history(record["prompt"])
         final = executor.states.get("final", "")
         finish_reason = executor.states.get("finish_reason", "React Agent 执行完成")
-        self._store.update_one(
-            "runs",
-            {"run_id": run_id},
-            {
+        await self._update_run(run_id, {
                 "status": "finished",
                 "final": final,
                 "finish_reason": finish_reason,
                 "finished_at": time.time(),
-            },
-        )
+            })
         self._write_conversation_assistant_message(record=record, final=final)
-        self._streams.publish(
+        await self._streams.publish(
             run_id,
             "workflow.finished",
             {"run_id": run_id, "mode": "react", "final": final, "finish_reason": finish_reason},
@@ -307,27 +338,20 @@ class RunOrchestrationService:
             streams=self._streams,
         )
         await orchestrator.start(record["prompt"])
-        self._store.update_one(
-            "runs",
-            {"run_id": run_id},
-            {
+        await self._update_run(run_id, {
                 "status": "finished",
                 "plan": orchestrator.state.plan,
                 "final": orchestrator.state.final,
                 "finish_reason": orchestrator.state.finish_reason,
                 "finished_at": time.time(),
-            },
-        )
+            })
         self._write_conversation_assistant_message(record=record, final=orchestrator.state.final)
+        await self._streams.publish(run_id, "workflow.finished", {
+            "run_id": run_id, "final": orchestrator.state.final,
+            "finish_reason": orchestrator.state.finish_reason})
 
     def _apply_pinned_context(self, agent: AgentBase, record: dict[str, Any]) -> None:
-        """把 run 携带的固定上下文（收藏）写入 agent state，供 PinnedContextProvider 读取。
-
-        注意：agent 实例由 AgentFactoryService 缓存为单例，其 states 在并发 run 间共享。
-        这与既有的 _load_conversation_history（同样在共享实例上重写 agent_history）一致：
-        同一 executor 同时参与多个 run 时，per-run 状态会相互覆盖。pinned_context 沿用此既有约束，
-        不引入新的并发模型；若未来需要严格隔离，应改为按 run 构造独立 agent/state 或按 executor 串行化 run。
-        """
+        """将收藏上下文注入本次执行专属的 Agent。"""
         states = getattr(agent, "states", None)
         if isinstance(states, dict):
             states["pinned_context"] = list(record.get("pinned_context") or [])
@@ -367,19 +391,15 @@ class RunOrchestrationService:
         role = "用户" if message.get("role") == "user" else "Agent"
         return f"### 历史消息\n{role}：{message.get('content', '')}"
 
-    def _mark_run_cancelled(self, record: dict[str, Any], reason: str, publish: bool) -> dict[str, Any]:
+    async def _mark_run_cancelled(self, record: dict[str, Any], reason: str, publish: bool) -> dict[str, Any]:
         run_id = record["run_id"]
-        item = self._store.update_one(
-            "runs",
-            {"run_id": run_id},
-            {
+        item = await self._update_run(run_id, {
                 "status": "cancelled",
                 "cancel_reason": reason,
                 "finished_at": time.time(),
-            },
-        ) or self.get_run(run_id) or record
+            }) or (await self.get_run(run_id)) or record
         if publish:
-            self._streams.publish(
+            await self._streams.publish(
                 run_id,
                 "workflow.failed",
                 {"run_id": run_id, "error": reason, "cancelled": True},

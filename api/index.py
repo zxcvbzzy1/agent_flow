@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pymongo.errors import PyMongoError
+from redis.exceptions import RedisError
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
@@ -26,8 +27,12 @@ from api.tools.router import router as tools_router  # noqa: E402
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    get_container()
-    yield
+    container = get_container()
+    await container.runtime.start()
+    try:
+        yield
+    finally:
+        await container.runtime.close()
 
 
 def create_app() -> FastAPI:
@@ -36,6 +41,10 @@ def create_app() -> FastAPI:
     @app.exception_handler(PyMongoError)
     async def database_unavailable(request, exc):
         return JSONResponse(status_code=503, content={"detail": "数据库不可用，请稍后重试"})
+
+    @app.exception_handler(RedisError)
+    async def redis_unavailable(request, exc):
+        return JSONResponse(status_code=503, content={"detail": "Redis 运行时不可用"})
 
     app.add_middleware(
         CORSMiddleware,
@@ -55,9 +64,11 @@ def create_app() -> FastAPI:
     async def health():
         container = get_container()
         container.store.ping()
+        await container.runtime.redis.ping()
         return {
             "status": "ok",
             "mongo": "mongodb",
+            "redis": "ok",
         }
 
     return app

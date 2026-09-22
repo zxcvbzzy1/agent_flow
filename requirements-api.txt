@@ -8,3 +8,4 @@ pytest
 pytest-asyncio
 
 json_repair
+redis>=5.0,<9

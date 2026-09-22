@@ -5,9 +5,9 @@ import uuid
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
+import pytest_asyncio
+from im_backend.tests.test_redis_im_integration import backend
 
-from api.core.dependencies import get_container
 from api.index import app
 from domain.agent_base import AgentBase, ToolCall
 from domain.event import Event
@@ -20,6 +20,19 @@ from domain.runtime_hooks import (
 )
 from application.services.llm_streaming import StreamingObservableLLMClient
 from infra.tool.common_func import HumanCollaborationAuditor, human_approval_service
+
+
+@pytest_asyncio.fixture
+async def standalone_client(backend, monkeypatch, tmp_path):
+    from api.core import dependencies
+    from api import index
+    container = backend[0].bridge
+    container.tools._upload_dir = tmp_path / "uploaded_tools"
+    container.tools._upload_dir.mkdir()
+    monkeypatch.setattr(dependencies, "get_container", lambda: container)
+    monkeypatch.setattr(index, "get_container", lambda: container)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        yield client
 
 
 class _HumanConfirmSpec:
@@ -127,10 +140,11 @@ def _executor_provider_config() -> list[dict]:
     ]
 
 
-def test_health_and_cors_headers():
-    client = TestClient(app)
+@pytest.mark.asyncio
+async def test_health_and_cors_headers(backend, standalone_client):
+    client = standalone_client
 
-    response = client.options(
+    response = await client.options(
         "/api/tools",
         headers={
             "Origin": "http://localhost:5173",
@@ -141,19 +155,20 @@ def test_health_and_cors_headers():
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
 
-    health = client.get("/health")
+    health = await client.get("/health")
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
 
 
-def test_tools_api_lists_builtin_and_uploaded_tool():
-    client = TestClient(app)
+@pytest.mark.asyncio
+async def test_tools_api_lists_builtin_and_uploaded_tool(backend, standalone_client):
+    client = standalone_client
 
-    tools = client.get("/api/tools").json()["items"]
+    tools = (await client.get("/api/tools")).json()["items"]
     assert any(item["name"] == "bash" for item in tools)
     assert any(item["name"] == "inline_artifact" for item in tools)
 
-    response = client.post(
+    response = await client.post(
         "/api/tools/upload",
         json={
             "name": "unit_test_tool",
@@ -167,28 +182,29 @@ def test_tools_api_lists_builtin_and_uploaded_tool():
 
     assert response.status_code == 200
     assert response.json()["item"]["name"] == "unit_test_tool"
-    tools = client.get("/api/tools").json()["items"]
+    tools = (await client.get("/api/tools")).json()["items"]
     assert any(item["name"] == "unit_test_tool" for item in tools)
 
 
-def test_context_agent_run_and_conversation_apis():
-    client = TestClient(app)
+@pytest.mark.asyncio
+async def test_context_agent_run_and_conversation_apis(backend, standalone_client):
+    client = standalone_client
 
-    catalog = client.get("/api/contexts/catalog")
+    catalog = await client.get("/api/contexts/catalog")
     assert catalog.status_code == 200
     assert "providers" in catalog.json()["item"]
 
-    contexts = client.get("/api/contexts")
+    contexts = await client.get("/api/contexts")
     assert contexts.status_code == 200
     assert any(item["context_id"] == "default_executor" for item in contexts.json()["items"])
 
-    missing_providers = client.post(
+    missing_providers = await client.post(
         "/api/contexts",
         json={"name": "Invalid Context", "kind": "executor"},
     )
     assert missing_providers.status_code == 400
 
-    unknown_strategy = client.post(
+    unknown_strategy = await client.post(
         "/api/contexts",
         json={
             "name": "Invalid Strategy",
@@ -207,28 +223,28 @@ def test_context_agent_run_and_conversation_apis():
     )
     assert unknown_strategy.status_code == 400
 
-    context = client.post(
+    context = (await client.post(
         "/api/contexts",
         json={
             "name": "API Test Context",
             "kind": "executor",
             "provider_config": _executor_provider_config(),
         },
-    ).json()["item"]
-    assert client.get(f"/api/contexts/{context['context_id']}").status_code == 200
+    )).json()["item"]
+    assert (await client.get(f"/api/contexts/{context['context_id']}")).status_code == 200
     assert context["provider_count"] == 3
 
-    agent = client.post(
+    agent = (await client.post(
         "/api/agents",
         json={
             "name": "API Test Agent",
             "agent_type": "executor",
             "context_id": context["context_id"],
         },
-    ).json()["item"]
+    )).json()["item"]
     assert agent["agent_type"] == "executor"
 
-    run = client.post(
+    run = (await client.post(
         "/api/runs",
         json={
             "prompt": "测试任务",
@@ -237,18 +253,18 @@ def test_context_agent_run_and_conversation_apis():
             "context_id": "default_step",
             "auto_start": False,
         },
-    ).json()["item"]
-    assert client.get(f"/api/runs/{run['run_id']}").json()["item"]["status"] == "pending"
+    )).json()["item"]
+    assert (await client.get(f"/api/runs/{run['run_id']}")).json()["item"]["status"] == "pending"
 
-    conversation = client.post(
+    conversation = (await client.post(
         "/api/conversations",
         json={"title": "API Test Conversation"},
-    ).json()["item"]
-    message = client.post(
+    )).json()["item"]
+    message = (await client.post(
         f"/api/conversations/{conversation['conversation_id']}/messages",
         json={"role": "user", "content": "你好"},
-    ).json()["item"]
-    conversation_run = client.post(
+    )).json()["item"]
+    conversation_run = (await client.post(
         f"/api/conversations/{conversation['conversation_id']}/runs",
         json={
             "mode": "plan",
@@ -258,23 +274,24 @@ def test_context_agent_run_and_conversation_apis():
             "context_id": "default_step",
             "auto_start": False,
         },
-    ).json()["item"]
-    updated_message = client.get(
+    )).json()["item"]
+    updated_message = (await client.get(
         f"/api/conversations/{conversation['conversation_id']}/messages",
-    ).json()["items"][-1]
+    )).json()["items"][-1]
 
     assert conversation_run["conversation_id"] == conversation["conversation_id"]
     assert conversation_run["message_id"] == message["message_id"]
     assert updated_message["run_id"] == conversation_run["run_id"]
-    assert client.post(f"/api/conversations/{conversation['conversation_id']}/queue").status_code == 404
-    assert client.get(f"/api/conversations/{conversation['conversation_id']}/queue").status_code == 404
+    assert (await client.post(f"/api/conversations/{conversation['conversation_id']}/queue")).status_code == 404
+    assert (await client.get(f"/api/conversations/{conversation['conversation_id']}/queue")).status_code == 404
 
 
-def test_cancel_pending_run_marks_cancelled_and_publishes_workflow_failed():
-    client = TestClient(app)
-    container = get_container()
+@pytest.mark.asyncio
+async def test_cancel_pending_run_marks_cancelled_and_publishes_workflow_failed(backend, standalone_client):
+    client = standalone_client
+    container = backend[0].bridge
 
-    run = client.post(
+    run = (await client.post(
         "/api/runs",
         json={
             "prompt": "cancel pending run",
@@ -283,25 +300,26 @@ def test_cancel_pending_run_marks_cancelled_and_publishes_workflow_failed():
             "context_id": "default_step",
             "auto_start": False,
         },
-    ).json()["item"]
+    )).json()["item"]
 
-    response = client.post(f"/api/runs/{run['run_id']}/cancel")
+    response = await client.post(f"/api/runs/{run['run_id']}/cancel")
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.json()["item"]["status"] == "cancelled"
-    stored = client.get(f"/api/runs/{run['run_id']}").json()["item"]
+    stored = (await client.get(f"/api/runs/{run['run_id']}")).json()["item"]
     assert stored["status"] == "cancelled"
     events = container.events.list_events(run["run_id"])
     assert events[-1]["name"] == "workflow.failed"
     assert events[-1]["payload"]["cancelled"] is True
-    assert client.post(f"/api/runs/{run['run_id']}/cancel").status_code == 200
-    assert client.post("/api/runs/not-found/cancel").status_code == 404
+    assert (await client.post(f"/api/runs/{run['run_id']}/cancel")).status_code == 202
+    assert (await client.post("/api/runs/not-found/cancel")).status_code == 404
 
 
-def test_runs_list_and_create_validation():
-    client = TestClient(app)
+@pytest.mark.asyncio
+async def test_runs_list_and_create_validation(backend, standalone_client):
+    client = standalone_client
 
-    empty_executors = client.post(
+    empty_executors = await client.post(
         "/api/runs",
         json={
             "prompt": "missing executor",
@@ -313,7 +331,7 @@ def test_runs_list_and_create_validation():
     )
     assert empty_executors.status_code == 400
 
-    missing_context = client.post(
+    missing_context = await client.post(
         "/api/runs",
         json={
             "prompt": "missing context",
@@ -325,7 +343,7 @@ def test_runs_list_and_create_validation():
     )
     assert missing_context.status_code == 404
 
-    run = client.post(
+    run = (await client.post(
         "/api/runs",
         json={
             "prompt": "list visible run",
@@ -334,28 +352,28 @@ def test_runs_list_and_create_validation():
             "context_id": "default_step",
             "auto_start": False,
         },
-    ).json()["item"]
-    listed = client.get("/api/runs")
+    )).json()["item"]
+    listed = await client.get("/api/runs")
 
     assert listed.status_code == 200
     assert any(item["run_id"] == run["run_id"] for item in listed.json()["items"])
 
 
 @pytest.mark.asyncio
-async def test_react_run_uses_start_with_history_and_writes_assistant_message():
-    container = get_container()
+async def test_react_run_uses_start_with_history_and_writes_assistant_message(backend, standalone_client):
+    container = backend[0].bridge
     conversation = container.conversations.create_conversation("React Chat")
-    container.conversations.add_message(
+    await container.conversations.add_message(
         conversation_id=conversation["conversation_id"],
         role="user",
         content="previous user",
     )
-    container.conversations.add_message(
+    await container.conversations.add_message(
         conversation_id=conversation["conversation_id"],
         role="assistant",
         content="previous assistant",
     )
-    user_message = container.conversations.add_message(
+    user_message = await container.conversations.add_message(
         conversation_id=conversation["conversation_id"],
         role="user",
         content="react hello",
@@ -382,7 +400,7 @@ async def test_react_run_uses_start_with_history_and_writes_assistant_message():
     executor.start_with_history = fake_start_with_history
     container.agents.build_run_agent = fake_build_run_agent
     try:
-        run = container.runs.create_run(
+        run = await container.runs.create_run(
             prompt=user_message["content"],
             mode="react",
             executor_agent_id="default_executor",
@@ -390,12 +408,12 @@ async def test_react_run_uses_start_with_history_and_writes_assistant_message():
             message_id=user_message["message_id"],
             auto_start=True,
         )
-        await asyncio.sleep(0.05)
+        await asyncio.gather(*list(container.runtime._tasks.values()))
     finally:
         executor.start_with_history = original_start_with_history
         container.agents.build_run_agent = original_build_run_agent
 
-    stored = container.runs.get_run(run["run_id"])
+    stored = await container.runs.get_run(run["run_id"])
     messages = container.conversations.list_messages(conversation["conversation_id"])
     memory = executor.context_engine.get_memory()
     history = "\n".join(
@@ -415,15 +433,15 @@ async def test_react_run_uses_start_with_history_and_writes_assistant_message():
 
 
 @pytest.mark.asyncio
-async def test_conversation_history_is_isolated_between_react_runs():
-    container = get_container()
+async def test_conversation_history_is_isolated_between_react_runs(backend, standalone_client):
+    container = backend[0].bridge
     first = container.conversations.create_conversation("First Chat")
-    container.conversations.add_message(first["conversation_id"], "user", "first previous")
-    container.conversations.add_message(first["conversation_id"], "assistant", "first assistant")
+    await container.conversations.add_message(first["conversation_id"], "user", "first previous")
+    await container.conversations.add_message(first["conversation_id"], "assistant", "first assistant")
 
     second = container.conversations.create_conversation("Second Chat")
-    container.conversations.add_message(second["conversation_id"], "user", "second previous")
-    current = container.conversations.add_message(second["conversation_id"], "user", "second current")
+    await container.conversations.add_message(second["conversation_id"], "user", "second previous")
+    current = await container.conversations.add_message(second["conversation_id"], "user", "second current")
 
     executor = container.agents.get_agent("default_executor")
     original_start_with_history = executor.start_with_history
@@ -444,7 +462,7 @@ async def test_conversation_history_is_isolated_between_react_runs():
     executor.start_with_history = fake_start_with_history
     container.agents.build_run_agent = fake_build_run_agent
     try:
-        container.runs.create_run(
+        await container.runs.create_run(
             prompt=current["content"],
             mode="react",
             executor_agent_id="default_executor",
@@ -452,7 +470,7 @@ async def test_conversation_history_is_isolated_between_react_runs():
             message_id=current["message_id"],
             auto_start=True,
         )
-        await asyncio.sleep(0.05)
+        await asyncio.gather(*list(container.runtime._tasks.values()))
     finally:
         executor.start_with_history = original_start_with_history
         container.agents.build_run_agent = original_build_run_agent
@@ -470,12 +488,12 @@ async def test_conversation_history_is_isolated_between_react_runs():
 
 
 @pytest.mark.asyncio
-async def test_plan_run_loads_conversation_history_into_planner_memory():
-    container = get_container()
+async def test_plan_run_loads_conversation_history_into_planner_memory(backend, standalone_client):
+    container = backend[0].bridge
     conversation = container.conversations.create_conversation("Plan Chat")
-    container.conversations.add_message(conversation["conversation_id"], "user", "plan previous")
-    container.conversations.add_message(conversation["conversation_id"], "assistant", "plan assistant")
-    current = container.conversations.add_message(conversation["conversation_id"], "user", "plan current")
+    await container.conversations.add_message(conversation["conversation_id"], "user", "plan previous")
+    await container.conversations.add_message(conversation["conversation_id"], "assistant", "plan assistant")
+    current = await container.conversations.add_message(conversation["conversation_id"], "user", "plan current")
 
     planner = container.agents.get_agent("default_planner")
     original_generate_plan = planner.generate_plan
@@ -505,7 +523,7 @@ async def test_plan_run_loads_conversation_history_into_planner_memory():
     planner.summarize_result = fake_summarize_result
     container.agents.build_run_agent = fake_build_run_agent
     try:
-        container.runs.create_run(
+        await container.runs.create_run(
             prompt=current["content"],
             mode="plan",
             planner_agent_id="default_planner",
@@ -515,7 +533,7 @@ async def test_plan_run_loads_conversation_history_into_planner_memory():
             message_id=current["message_id"],
             auto_start=True,
         )
-        await asyncio.sleep(0.05)
+        await asyncio.gather(*list(container.runtime._tasks.values()))
     finally:
         planner.generate_plan = original_generate_plan
         planner.summarize_result = original_summarize_result
@@ -527,18 +545,19 @@ async def test_plan_run_loads_conversation_history_into_planner_memory():
     assert "plan current" not in observed_history[0]
 
 
-def test_cancel_run_does_not_write_assistant_message():
-    client = TestClient(app)
+@pytest.mark.asyncio
+async def test_cancel_run_does_not_write_assistant_message(backend, standalone_client):
+    client = standalone_client
 
-    conversation = client.post(
+    conversation = (await client.post(
         "/api/conversations",
         json={"title": "Cancel Run"},
-    ).json()["item"]
-    message = client.post(
+    )).json()["item"]
+    message = (await client.post(
         f"/api/conversations/{conversation['conversation_id']}/messages",
         json={"role": "user", "content": "cancel direct run"},
-    ).json()["item"]
-    run = client.post(
+    )).json()["item"]
+    run = (await client.post(
         f"/api/conversations/{conversation['conversation_id']}/runs",
         json={
             "mode": "plan",
@@ -548,29 +567,30 @@ def test_cancel_run_does_not_write_assistant_message():
             "context_id": "default_step",
             "auto_start": False,
         },
-    ).json()["item"]
+    )).json()["item"]
 
-    response = client.post(f"/api/runs/{run['run_id']}/cancel")
-    messages = client.get(f"/api/conversations/{conversation['conversation_id']}/messages").json()["items"]
+    response = await client.post(f"/api/runs/{run['run_id']}/cancel")
+    messages = (await client.get(f"/api/conversations/{conversation['conversation_id']}/messages")).json()["items"]
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.json()["item"]["status"] == "cancelled"
     assert all(item["role"] != "assistant" for item in messages)
 
 
-def test_delete_conversation_cascades_messages_runs_and_events():
-    client = TestClient(app)
-    container = get_container()
+@pytest.mark.asyncio
+async def test_delete_conversation_cascades_messages_runs_and_events(backend, standalone_client):
+    client = standalone_client
+    container = backend[0].bridge
 
-    conversation = client.post(
+    conversation = (await client.post(
         "/api/conversations",
         json={"title": "Delete Cascade"},
-    ).json()["item"]
-    message_item = client.post(
+    )).json()["item"]
+    message_item = (await client.post(
         f"/api/conversations/{conversation['conversation_id']}/messages",
         json={"role": "user", "content": "delete me"},
-    ).json()["item"]
-    run = client.post(
+    )).json()["item"]
+    run = (await client.post(
         f"/api/conversations/{conversation['conversation_id']}/runs",
         json={
             "mode": "plan",
@@ -579,11 +599,12 @@ def test_delete_conversation_cascades_messages_runs_and_events():
             "executor_agent_ids": ["default_executor"],
             "context_id": "default_step",
             "max_replan_rounds": 1,
+            "auto_start": False,
         },
-    ).json()["item"]
-    container.events.publish(run["run_id"], "workflow.started", {"ok": True})
+    )).json()["item"]
+    await container.events.publish(run["run_id"], "workflow.started", {"ok": True})
 
-    response = client.delete(f"/api/conversations/{conversation['conversation_id']}")
+    response = await client.delete(f"/api/conversations/{conversation['conversation_id']}")
 
     assert response.status_code == 200
     assert response.json()["item"]["deleted"] is True
@@ -593,10 +614,11 @@ def test_delete_conversation_cascades_messages_runs_and_events():
     assert container.events.list_events(run["run_id"]) == []
 
 
-def test_delete_uploaded_tool_and_protect_builtin_tool():
-    client = TestClient(app)
+@pytest.mark.asyncio
+async def test_delete_uploaded_tool_and_protect_builtin_tool(backend, standalone_client):
+    client = standalone_client
     tool_name = f"delete_tool_{uuid.uuid4().hex[:8]}"
-    upload = client.post(
+    upload = await client.post(
         "/api/tools/upload",
         json={
             "name": tool_name,
@@ -609,24 +631,25 @@ def test_delete_uploaded_tool_and_protect_builtin_tool():
     )
 
     assert upload.status_code == 200
-    assert client.delete(f"/api/tools/{tool_name}").status_code == 200
-    tools = client.get("/api/tools").json()["items"]
+    assert (await client.delete(f"/api/tools/{tool_name}")).status_code == 200
+    tools = (await client.get("/api/tools")).json()["items"]
     assert all(item["name"] != tool_name for item in tools)
-    assert client.delete("/api/tools/bash").status_code == 400
+    assert (await client.delete("/api/tools/bash")).status_code == 400
 
 
-def test_delete_agent_cleans_runtime_and_related_runs():
-    client = TestClient(app)
-    container = get_container()
-    agent = client.post(
+@pytest.mark.asyncio
+async def test_delete_agent_cleans_runtime_and_related_runs(backend, standalone_client):
+    client = standalone_client
+    container = backend[0].bridge
+    agent = (await client.post(
         "/api/agents",
         json={
             "name": "Delete Agent",
             "agent_type": "executor",
             "context_id": "default_executor",
         },
-    ).json()["item"]
-    run = client.post(
+    )).json()["item"]
+    run = (await client.post(
         "/api/runs",
         json={
             "prompt": "delete agent run",
@@ -635,10 +658,10 @@ def test_delete_agent_cleans_runtime_and_related_runs():
             "context_id": "default_step",
             "auto_start": False,
         },
-    ).json()["item"]
-    container.events.publish(run["run_id"], "workflow.started", {"ok": True})
+    )).json()["item"]
+    await container.events.publish(run["run_id"], "workflow.started", {"ok": True})
 
-    response = client.delete(f"/api/agents/{agent['agent_id']}")
+    response = await client.delete(f"/api/agents/{agent['agent_id']}")
 
     assert response.status_code == 200
     assert response.json()["item"]["deleted"] is True
@@ -646,14 +669,15 @@ def test_delete_agent_cleans_runtime_and_related_runs():
     assert agent["agent_id"] not in container.agents._agents
     assert container.store.find_one("runs", {"run_id": run["run_id"]}) is None
     assert container.events.list_events(run["run_id"]) == []
-    assert client.delete("/api/agents/default_executor").status_code == 400
+    assert (await client.delete("/api/agents/default_executor")).status_code == 400
 
 
-def test_event_stream_service_formats_historical_finished_event():
-    container = get_container()
+@pytest.mark.asyncio
+async def test_event_stream_service_formats_historical_finished_event(backend):
+    container = backend[0].bridge
     run_id = "stream-test-run"
-    container.events.publish(run_id, "workflow.started", {"ok": True})
-    container.events.publish(run_id, "workflow.finished", {"final": "done"})
+    await container.events.publish(run_id, "workflow.started", {"ok": True})
+    await container.events.publish(run_id, "workflow.finished", {"final": "done"})
 
     events = container.events.list_events(run_id)
 
@@ -661,18 +685,19 @@ def test_event_stream_service_formats_historical_finished_event():
     assert "event: workflow.finished" in container.events.format_sse(events[-1])
 
 
-def test_frontend_bridge_mirrors_tool_events_to_run_stream():
-    container = get_container()
+@pytest.mark.asyncio
+async def test_frontend_bridge_mirrors_tool_events_to_run_stream(backend):
+    container = backend[0].bridge
     run_id = "bridge-test-run"
 
     container.frontend_bridge.register_agent_run("bridge_agent", run_id)
-    container.frontend_bridge.mirror_tool_event(
+    await container.frontend_bridge.mirror_tool_event(
         Event(
             name="infra.system.bash.called",
             payload={"agent_id": "bridge_agent", "run_id": run_id, "command": "echo hi"},
         )
     )
-    container.frontend_bridge.mirror_tool_event(
+    await container.frontend_bridge.mirror_tool_event(
         Event(
             name="infra.system.bash.failed",
             payload={"agent_id": "bridge_agent", "name": "bash", "success": False, "respond": "no"},
@@ -685,12 +710,13 @@ def test_frontend_bridge_mirrors_tool_events_to_run_stream():
     assert events[-1]["payload"]["respond"] == "no"
 
 
-def test_frontend_bridge_mirrors_artifacts_event_to_run_stream():
-    container = get_container()
+@pytest.mark.asyncio
+async def test_frontend_bridge_mirrors_artifacts_event_to_run_stream(backend):
+    container = backend[0].bridge
     run_id = "artifact-bridge-test-run"
 
     container.frontend_bridge.register_agent_run("artifact_agent", run_id)
-    container.frontend_bridge.mirror_tool_event(
+    await container.frontend_bridge.mirror_tool_event(
         Event(
             name="artifacts.document",
             payload={
@@ -758,10 +784,10 @@ def test_inline_artifact_tool_builds_defaults_and_validates():
 
 
 @pytest.mark.asyncio
-async def test_inline_artifact_tool_called_event_publishes_artifact_sse():
+async def test_inline_artifact_tool_called_event_publishes_artifact_sse(backend):
     from infra.config import bus, factory
 
-    container = get_container()
+    container = backend[0].bridge
     run_id = "artifact-tool-test-run"
     agent_id = "artifact_tool_agent"
     container.frontend_bridge.register_agent_run(agent_id, run_id)
@@ -792,8 +818,8 @@ async def test_inline_artifact_tool_called_event_publishes_artifact_sse():
 
 
 @pytest.mark.asyncio
-async def test_human_confirmation_can_be_requested_and_resolved():
-    container = get_container()
+async def test_human_confirmation_can_be_requested_and_resolved(backend):
+    container = backend[0].bridge
     run_id = "confirm-test-run"
 
     task = asyncio.create_task(
@@ -805,13 +831,15 @@ async def test_human_confirmation_can_be_requested_and_resolved():
             arguments={"command": "echo hi"},
         )
     )
-    await asyncio.sleep(0)
-
-    pending = container.human_confirmations.list_pending(run_id)
+    for _ in range(100):
+        pending = await container.human_confirmations.list_pending(run_id)
+        if pending:
+            break
+        await asyncio.sleep(0.01)
     assert len(pending) == 1
     assert pending[0]["status"] == "pending"
 
-    resolved = container.human_confirmations.resolve(
+    resolved = await container.human_confirmations.resolve(
         run_id=run_id,
         confirmation_id=pending[0]["confirmation_id"],
         approved=True,
@@ -829,8 +857,10 @@ async def test_human_confirmation_can_be_requested_and_resolved():
 
 
 @pytest.mark.asyncio
-async def test_confirmation_api_lists_and_resolves_pending_request():
-    container = get_container()
+async def test_confirmation_api_lists_and_resolves_pending_request(backend, monkeypatch):
+    from api.core import dependencies
+    container = backend[0].bridge
+    monkeypatch.setattr(dependencies, 'get_container', lambda: container)
     run_id = "confirm-api-run"
 
     task = asyncio.create_task(
@@ -842,7 +872,10 @@ async def test_confirmation_api_lists_and_resolves_pending_request():
             arguments={"command": "pwd"},
         )
     )
-    await asyncio.sleep(0)
+    for _ in range(100):
+        if await container.human_confirmations.list_pending(run_id):
+            break
+        await asyncio.sleep(0.01)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -970,8 +1003,8 @@ async def test_agent_base_run_one_does_not_inject_run_id():
 
 
 @pytest.mark.asyncio
-async def test_streaming_observable_llm_publishes_executor_delta_and_structured_events():
-    container = get_container()
+async def test_streaming_observable_llm_publishes_executor_delta_and_structured_events(backend):
+    container = backend[0].bridge
     run_id = f"llm-stream-executor-run-{uuid.uuid4()}"
     previous_run_context = get_run_context_provider()
     chunks = [
@@ -1007,8 +1040,8 @@ async def test_streaming_observable_llm_publishes_executor_delta_and_structured_
 
 
 @pytest.mark.asyncio
-async def test_streaming_observable_llm_publishes_planner_events():
-    container = get_container()
+async def test_streaming_observable_llm_publishes_planner_events(backend):
+    container = backend[0].bridge
     run_id = f"llm-stream-planner-run-{uuid.uuid4()}"
     previous_run_context = get_run_context_provider()
     chunks = [

@@ -27,6 +27,7 @@ class ServiceContainer:
         self.root_dir = Path(__file__).resolve().parents[2]
         self.store = DocumentStore(settings.mongo_url, settings.mongo_db)
         self.events = EventStreamService(self.store)
+        self.runtime = self.events.runtime
         self.frontend_bridge = FrontendEventBridge(self.events, factory)
         self.human_confirmations = HumanConfirmationService(self.events)
         register_tool_event_observer(self.frontend_bridge)
@@ -42,7 +43,7 @@ class ServiceContainer:
             self.events,
             self.frontend_bridge,
         )
-        self.conversations = ConversationService(self.store)
+        self.conversations = ConversationService(self.store, self.runtime)
 
 
 @lru_cache(maxsize=1)

@@ -45,7 +45,7 @@ async def delete_conversation(
     service: ConversationService = Depends(get_conversation_service),
 ):
     try:
-        return {"item": service.delete_conversation(conversation_id)}
+        return {"item": await service.delete_conversation(conversation_id)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -65,7 +65,7 @@ async def add_message(
     service: ConversationService = Depends(get_conversation_service),
 ):
     try:
-        item = service.add_message(
+        item = await service.add_message(
             conversation_id=conversation_id,
             role=request.role,
             content=request.content,
@@ -88,7 +88,7 @@ async def create_run_from_conversation(
         message = conversations.get_message(conversation_id, request.message_id)
         if message.get("role") != "user":
             raise ValueError("只能从 user 消息创建 run")
-        run = runs.create_run(
+        run = await runs.create_run(
             prompt=message["content"],
             mode=request.mode,
             executor_agent_id=request.executor_agent_id,

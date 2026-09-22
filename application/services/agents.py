@@ -244,7 +244,7 @@ class AgentFactoryService:
         engine = self._contexts.build_engine(record["context_id"])
         return self._construct_agent(record, engine)
 
-    def delete_agent(self, agent_id: str) -> dict[str, Any]:
+    async def delete_agent(self, agent_id: str) -> dict[str, Any]:
         if agent_id in self.PROTECTED_AGENT_IDS:
             raise ValueError("默认 Agent 不允许删除")
         record = self.get_agent_record(agent_id)
@@ -271,6 +271,8 @@ class AgentFactoryService:
         self._agents.pop(agent_id, None)
 
         for run_id in run_ids:
+            if self._events:
+                await self._events.runtime.delete_runtime(run_id)
             stats["runs"] += self._store.delete_many("runs", {"run_id": run_id})
             stats["events"] += self._store.delete_many("events", {"run_id": run_id})
 

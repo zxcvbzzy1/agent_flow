@@ -76,7 +76,7 @@ class PlanOrchestrator:
         }
 
     async def start(self, prompt: str) -> None:
-        self._dispatch({
+        await self._dispatch({
             "event_dispatch": "workflow.started",
             "playload": {"prompt": prompt},
         })
@@ -85,7 +85,7 @@ class PlanOrchestrator:
             self.state.to_context_dict(),
             list(self.executors.keys()),
         )
-        self._dispatch({
+        await self._dispatch({
             "event_dispatch": "plan.generated",
             "playload": {"plan": plan},
         })
@@ -93,7 +93,7 @@ class PlanOrchestrator:
         await self.execute(plan)
 
         final = await self.planner.summarize_result(self.state.to_context_dict())
-        self._dispatch({
+        await self._dispatch({
             "event_dispatch": "workflow.finished",
             "playload": {
                 "final": final,
@@ -104,7 +104,7 @@ class PlanOrchestrator:
     async def execute(self, plan: Plan) -> None:
         while True:
             self._fail_steps_with_unknown_executor(plan)
-            self._dispatch({
+            await self._dispatch({
                 "event_dispatch": "wave.completed",
                 "playload": {"plan": plan},
             })
@@ -120,7 +120,7 @@ class PlanOrchestrator:
 
             if not ready_steps:
                 self._fail_blocked_steps(pending_steps, plan)
-                self._dispatch({
+                await self._dispatch({
                     "event_dispatch": "wave.completed",
                     "playload": {"plan": plan},
                 })
@@ -131,7 +131,7 @@ class PlanOrchestrator:
                 for step in ready_steps
             ])
 
-            self._dispatch({
+            await self._dispatch({
                 "event_dispatch": "wave.completed",
                 "playload": {"plan": plan},
             })
@@ -156,7 +156,7 @@ class PlanOrchestrator:
                 step.status_reason = f"未知 executor_id: {step.executor_id}"
                 step.result_observation = step.status_reason
 
-    def _dispatch(self, action: dict) -> None:
+    async def _dispatch(self, action: dict) -> None:
         action_type = action.get("event_dispatch")
         playload = action.get("playload", {})
         
@@ -282,7 +282,7 @@ class PlanOrchestrator:
                     step.status = "skipped"
                     step.status_reason = decision.get("reason", "replan 决定提前结束")
                     step.result_observation = step.status_reason
-            self._dispatch({
+            await self._dispatch({
                 "event_dispatch": "plan.replanned",
                 "playload": {"plan": plan},
             })
@@ -290,7 +290,7 @@ class PlanOrchestrator:
 
         if action == "replan":
             self._apply_replan_steps(plan, decision.get("steps", []))
-            self._dispatch({
+            await self._dispatch({
                 "event_dispatch": "plan.replanned",
                 "playload": {"plan": plan},
             })
