@@ -308,7 +308,7 @@ async def test_cancel_pending_run_marks_cancelled_and_publishes_workflow_failed(
     assert response.json()["item"]["status"] == "cancelled"
     stored = (await client.get(f"/api/runs/{run['run_id']}")).json()["item"]
     assert stored["status"] == "cancelled"
-    events = container.events.list_events(run["run_id"])
+    events = container.store.find_many("im_events", {"run_id": run["run_id"]}, sort=[("created_at", 1)])
     assert events[-1]["name"] == "workflow.failed"
     assert events[-1]["payload"]["cancelled"] is True
     assert (await client.post(f"/api/runs/{run['run_id']}/cancel")).status_code == 202
@@ -679,7 +679,7 @@ async def test_event_stream_service_formats_historical_finished_event(backend):
     await container.events.publish(run_id, "workflow.started", {"ok": True})
     await container.events.publish(run_id, "workflow.finished", {"final": "done"})
 
-    events = container.events.list_events(run_id)
+    events = container.store.find_many("im_events", {"run_id": run_id}, sort=[("created_at", 1)])
 
     assert [event["name"] for event in events] == ["workflow.started", "workflow.finished"]
     assert "event: workflow.finished" in container.events.format_sse(events[-1])

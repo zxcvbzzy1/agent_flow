@@ -1,14 +1,45 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
+import logging
 import time
 import uuid
+from contextlib import asynccontextmanager
 
+from redis.exceptions import RedisError
+from domain.run_context import current_execution_id
 from infra.runtime import RedisRuntime
+
+log = logging.getLogger(__name__)
+DELTAS = {'llm.delta', 'agent.delta'}
+BUSINESS_EVENTS = {
+    'workflow.started', 'workflow.finished', 'workflow.failed', 'run.cancelled',
+    'plan.generated', 'plan.replanned', 'wave.completed', 'plan.wave.completed',
+    'plan.step.started', 'plan.step.observed', 'plan.step.failed', 'task.updated',
+}
+SUMMARY_FIELDS = ('event_id', 'version', 'category', 'scope_id', 'run_id', 'execution_id', 'agent_name',
+                  'agent_id', 'conversation_id', 'message_id', 'name', 'created_at', 'trace')
+
+
+def event_summary(event):
+    if event.get('version') != 2 or event.get('name') in DELTAS:
+        return None
+    return {key: event[key] for key in SUMMARY_FIELDS if key in event}
+
+
+def scope_delivery(event):
+    if event.get('version') != 2:
+        return None
+    if event.get('trace'):
+        # Status consumers still need these small identifiers, never execution bodies.
+        return {**event_summary(event), 'payload': {k: v for k, v in event.get('payload', {}).items()
+                if k in {'run_id', 'message_id', 'agent_id', 'status', 'cancelled', 'run', 'conversation_id'}}}
+    return event
 
 
 class EventStreamService:
-    """Mongo event history with a Redis broadcast/replay stream."""
+    """Application-owned event classification; Redis only transports one channel."""
 
     def __init__(self, store, runtime: RedisRuntime | None = None):
         self._store = store
@@ -18,32 +49,148 @@ class EventStreamService:
     def subscribe(self, callback):
         self._subscribers.append(callback)
 
+    async def _broadcast(self, category, scope_id, event):
+        for attempt in range(3):
+            try:
+                return await asyncio.wait_for(self.runtime.append(category, scope_id, event), 1)
+            except (RedisError, OSError, TimeoutError):
+                if attempt < 2:
+                    await asyncio.sleep((0.05, 0.15)[attempt])
+        log.error('Event delivery failed; archived events recover on reconnect: %s', event['event_id'])
+
+    def _event(self, run_id, name, payload):
+        run = self._store.find_one('runs', {'run_id': run_id}) or {}
+        return dict(event_id=str(uuid.uuid4()), version=2, category='run', run_id=run_id,
+                    scope_id=run.get('scope_id') or run_id,
+                    conversation_id=run.get('im_conversation_id') or run.get('conversation_id', ''),
+                    message_id=run.get('source_message_id') or run.get('message_id', ''),
+                    execution_id=payload.get('execution_id') or current_execution_id.get(),
+                    agent_id=payload.get('agent_id') or payload.get('executor_id') or payload.get('planner_id', ''),
+                    name=name, payload=payload, created_at=time.time())
+
     async def publish(self, run_id, name, payload):
-        event = self._event(run_id, name, payload)
-        self._store.insert_one("events", event)
-        await self.runtime.append("run", run_id, event)
+        if name in BUSINESS_EVENTS:
+            base = self._event(run_id, name, payload)
+            event = await self.publish_scope(base['scope_id'], name, payload, context=base)
+        else:
+            event = self._event(run_id, name, payload)
+            self._store.insert_one('events', event)
+            await self._broadcast('run', run_id, event)
+            # Only explicit product notifications are projected, never raw traces.
+            if name.startswith(('artifacts.', 'human.confirmation.')):
+                notification = dict(payload)
+                notification.pop('arguments', None)
+                await self.publish_scope(event['scope_id'], name, notification, context=event, trace=False)
         for callback in self._subscribers:
             result = callback(event)
             if inspect.isawaitable(result):
                 await result
         return event
 
-    async def no_store_publish(self, run_id, name, payload):
-        """Retained in Redis for reconnects, but not archived in Mongo."""
-        event = self._event(run_id, name, payload)
-        await self.runtime.append("run", run_id, event)
+    async def publish_scope(self, scope_id, name, payload, *, context=None, trace=None):
+        context = context or {}
+        run_id = context.get('run_id') or payload.get('run_id') or (payload.get('run') or {}).get('run_id', '')
+        run = self._store.find_one('runs', {'run_id': run_id}) if run_id else None
+        run = run or {}
+        trace = (name in BUSINESS_EVENTS or name.startswith(('agent.execution.', 'agent.reply.'))
+                 or name == 'run.created') if trace is None else trace
+        body = dict(payload)
+        if trace:
+            # Business state/links only. Model outputs stay in run events or messages.
+            body = {k: v for k, v in body.items() if k in {
+                'run_id', 'message_id', 'agent_id', 'conversation_id', 'scope_id', 'status',
+                'cancelled', 'error', 'reason', 'mode', 'phase', 'step_id', 'execution_id',
+            }}
+            if name == 'run.created':
+                body['run'] = {k: v for k, v in payload.get('run', {}).items() if k in {'run_id', 'status'}}
+            plan = payload.get('plan') or {}
+            if isinstance(plan, dict) and 'steps' in plan:
+                body['steps'] = [{k: v for k, v in step.items() if k in {'step_id', 'title', 'executor_id', 'status'}}
+                                 for step in plan['steps']]
+            if isinstance(payload.get('step'), dict):
+                body['step'] = {k: v for k, v in payload['step'].items()
+                                if k in {'step_id', 'title', 'executor_id', 'status', 'status_reason'}}
+        event = dict(event_id=str(uuid.uuid4()), version=2, category='scope',
+                     scope_id=scope_id, room_id=scope_id, name=name, payload=body,
+                     run_id=run_id, execution_id=context.get('execution_id') or current_execution_id.get(),
+                     agent_id=context.get('agent_id') or payload.get('agent_id', ''),
+                     agent_name=payload.get('agent_name', ''),
+                     conversation_id=context.get('conversation_id') or run.get('im_conversation_id')
+                     or payload.get('conversation_id') or run.get('conversation_id', ''),
+                     message_id=context.get('message_id') or run.get('source_message_id')
+                     or payload.get('message_id', ''), trace=trace, created_at=time.time())
+        if run_id:
+            body.setdefault('run_id', run_id)
+        if event['message_id']:
+            body.setdefault('message_id', event['message_id'])
+        self._store.insert_one('im_events', event)
+        await self._broadcast('scope', scope_id, event)
         return event
 
-    @staticmethod
-    def _event(run_id, name, payload):
-        return dict(event_id=str(uuid.uuid4()), run_id=run_id, name=name,
-                    payload=payload, created_at=time.time())
+    async def no_store_publish(self, run_id, name, payload):
+        event = self._event(run_id, name, payload)
+        await self._broadcast('run', run_id, event)
+        return event
+
+    @asynccontextmanager
+    async def execution(self, run_id, agent, *, phase='execute', step_id='', execution_id=None):
+        token = current_execution_id.set(execution_id or str(uuid.uuid4()))
+        payload = {'run_id': run_id, 'agent_id': agent.id, 'agent_name': getattr(agent, 'name', agent.id),
+                   'phase': phase, 'step_id': step_id}
+        context = self._event(run_id, 'agent.execution.started', payload)
+        try:
+            await self.publish_scope(context['scope_id'], 'agent.execution.started', payload, context=context)
+            try:
+                yield
+            except asyncio.CancelledError:
+                await self.publish_scope(context['scope_id'], 'agent.execution.cancelled', payload, context=context)
+                raise
+            except Exception as exc:
+                await self.publish_scope(context['scope_id'], 'agent.execution.failed', {**payload, 'error': str(exc)}, context=context)
+                raise
+            else:
+                failed = getattr(agent, 'states', {}).get('is_finished') is False and phase == 'execute'
+                await self.publish_scope(context['scope_id'], 'agent.execution.failed' if failed else 'agent.execution.finished',
+                                         payload, context=context)
+        finally:
+            current_execution_id.reset(token)
 
     def list_events(self, run_id):
-        return self._store.find_many("events", {"run_id": run_id}, sort=[("created_at", 1)])
+        return self._store.find_many('events', {'run_id': run_id}, sort=[('created_at', 1), ('event_id', 1)])
 
-    async def stream(self, run_id, last_id=None):
-        async for raw in self.runtime.stream("run", run_id, lambda: self.list_events(run_id), last_id=last_id):
+    def summaries(self, run_id, *, execution_id=None, after=None, limit=100):
+        query = {'run_id': run_id, 'version': 2, 'name': {'$nin': list(DELTAS)}}
+        if execution_id:
+            query['execution_id'] = execution_id
+        if after:
+            anchor = self._store.find_one('events', {'run_id': run_id, 'event_id': after})
+            if not anchor:
+                raise KeyError('事件游标不存在')
+            query['$or'] = [{'created_at': {'$gt': anchor['created_at']}},
+                            {'created_at': anchor['created_at'], 'event_id': {'$gt': after}}]
+        items = self._store.find_many('events', query, sort=[('created_at', 1), ('event_id', 1)],
+                                      limit=limit + 1, projection={key: True for key in SUMMARY_FIELDS})
+        return {'items': [event_summary(e) for e in items[:limit]],
+                'next_cursor': items[limit - 1]['event_id'] if len(items) > limit else None}
+
+    def get_event(self, run_id, event_id):
+        return self._store.find_one('events', {'run_id': run_id, 'event_id': event_id})
+
+    async def stream(self, run_id, last_id=None, *, summary=False, execution_id=None):
+        def transform(event):
+            if execution_id and event.get('execution_id') != execution_id:
+                return None
+            return event_summary(event) if summary else event
+        def history():
+            if not summary:
+                return self.list_events(run_id)
+            query = {'run_id': run_id, 'version': 2, 'name': {'$nin': list(DELTAS)}}
+            if execution_id:
+                query['execution_id'] = execution_id
+            return self._store.find_many('events', query, sort=[('created_at', 1), ('event_id', 1)],
+                                         projection={key: True for key in SUMMARY_FIELDS})
+        async for raw in self.runtime.stream('run', run_id, history, last_id=last_id,
+                                             transform=transform, reconcile=summary):
             yield raw
 
     def format_sse(self, event, cursor=None):

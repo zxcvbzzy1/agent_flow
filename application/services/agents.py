@@ -272,9 +272,13 @@ class AgentFactoryService:
 
         for run_id in run_ids:
             if self._events:
-                await self._events.runtime.delete_runtime(run_id)
-            stats["runs"] += self._store.delete_many("runs", {"run_id": run_id})
-            stats["events"] += self._store.delete_many("events", {"run_id": run_id})
+                from application.services.run_state import RunStateService
+                deleted = await RunStateService(self._store, self._events.runtime).delete(run_id)
+                stats["runs"] += deleted["runs"]
+                stats["events"] += deleted["events"]
+            else:
+                stats["runs"] += self._store.delete_many("runs", {"run_id": run_id})
+                stats["events"] += self._store.delete_many("events", {"run_id": run_id})
 
         # 删除该 Agent 独占的上下文（创建时按模版克隆，与 Agent 1:1 绑定），避免删 Agent 后 contexts 残留。
         # 先删 Agent 记录与其 runs 再删上下文：delete_context 自带保护/引用校验——默认上下文、

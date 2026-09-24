@@ -22,18 +22,8 @@ INLINE_ARTIFACT = Tool(
         "properties": {
             "artifact_type": {
                 "type": "string",
-                "enum": ["message", "image", "diff", "document", "web"],
+                "enum": ["image", "diff", "document", "web"],
                 "description": "产物类型",
-            },
-            "message": {
-                "type": "object",
-                "description": "普通消息产物参数",
-                "properties": {
-                    "title": {"type": "string", "description": "消息标题"},
-                    "content": {"type": "string", "description": "消息内容"},
-                    "mime_type": {"type": "string", "description": "内容 MIME 类型"},
-                    "metadata": {"type": "object", "description": "前端渲染附加信息"},
-                },
             },
             "image": {
                 "type": "object",

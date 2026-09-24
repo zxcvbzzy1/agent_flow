@@ -81,8 +81,8 @@ class PlanOrchestrator:
             "playload": {"prompt": prompt},
         })
 
-        plan = await self.planner.generate_plan(
-            self.state.to_context_dict(),
+        plan = await self._invoke_agent(
+            self.planner, "generate_plan", self.state.to_context_dict(),
             list(self.executors.keys()),
         )
         await self._dispatch({
@@ -92,7 +92,7 @@ class PlanOrchestrator:
 
         await self.execute(plan)
 
-        final = await self.planner.summarize_result(self.state.to_context_dict())
+        final = await self._invoke_agent(self.planner, "summarize_result", self.state.to_context_dict())
         await self._dispatch({
             "event_dispatch": "workflow.finished",
             "playload": {
@@ -214,6 +214,7 @@ class PlanOrchestrator:
         async with self._executor_lock(step.executor_id):
             executor = self.executors[step.executor_id]
             step.status = "in_progress"
+            await self._publish_event("plan.step.started", {"step": step.to_dict(), "plan": plan.to_dict()})
 
             step_prompt = self.step_context_engine.build(
                 {
@@ -227,7 +228,7 @@ class PlanOrchestrator:
                 executor.states["is_finished"] = False
                 executor.states["finish_reason"] = ""
                 executor.states["final"] = ""
-                await executor.start(step_prompt)
+                await self._invoke_agent(executor, "start", step_prompt, step_id=step.step_id)
                 if executor.states.get("is_finished", True):
                     step.status = "done"
                     step.status_reason = executor.states.get("finish_reason", "执行完成")
@@ -244,6 +245,7 @@ class PlanOrchestrator:
                     {
                         "planner_id": self.planner.id,
                         "step": step.to_dict(),
+                        "plan": plan.to_dict(),
                     },
                 )
 
@@ -258,6 +260,10 @@ class PlanOrchestrator:
         ])
 
 
+    async def _invoke_agent(self, agent, method: str, *args, step_id: str = ""):
+        """Application adapters may observe a call without infrastructure in the domain."""
+        return await getattr(agent, method)(*args)
+
     async def _publish_event(self, name: str, payload: dict) -> None:
         if self.event_bus is None:
             return
@@ -270,8 +276,8 @@ class PlanOrchestrator:
             return False
 
         self._replan_rounds += 1
-        decision = await self.planner.replan_after_observation(
-            plan,
+        decision = await self._invoke_agent(
+            self.planner, "replan_after_observation", plan,
             self.state.to_context_dict(),
         )
         action = decision.get("action", "continue")

@@ -44,15 +44,22 @@ class ConversationService:
         }
 
         stats = {
-            "conversations": self._store.delete_one("conversations", {"conversation_id": conversation_id}),
-            "messages": self._store.delete_many("messages", {"conversation_id": conversation_id}),
-            "runs": self._store.delete_many("runs", {"conversation_id": conversation_id}),
+            "conversations": 0,
+            "messages": 0,
+            "runs": 0,
             "events": 0,
         }
         for run_id in run_ids:
             if self.runtime:
-                await self.runtime.delete_runtime(run_id)
-            stats["events"] += self._store.delete_many("events", {"run_id": run_id})
+                from application.services.run_state import RunStateService
+                deleted = await RunStateService(self._store, self.runtime).delete(run_id)
+                stats["runs"] += deleted["runs"]
+                stats["events"] += deleted["events"]
+            else:
+                stats["runs"] += self._store.delete_many("runs", {"run_id": run_id})
+                stats["events"] += self._store.delete_many("events", {"run_id": run_id})
+        stats["conversations"] = self._store.delete_one("conversations", {"conversation_id": conversation_id})
+        stats["messages"] = self._store.delete_many("messages", {"conversation_id": conversation_id})
         return {"deleted": True, "conversation_id": conversation_id, "stats": stats}
 
     async def add_message(

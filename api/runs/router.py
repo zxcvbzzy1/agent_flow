@@ -108,3 +108,19 @@ async def resolve_run_confirmation(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"item": item}
+
+
+@router.get("/{run_id}/scope/events")
+async def stream_run_business_events(
+    run_id: str,
+    last_event_id: str | None = Header(default=None),
+    service: EventStreamService = Depends(get_event_service),
+):
+    from application.services.events import scope_delivery
+    run = service._store.find_one("runs", {"run_id": run_id})
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    scope_id = run.get("scope_id") or run_id
+    return StreamingResponse(service.runtime.stream(
+        "scope", scope_id, lambda: service._store.find_many("im_events", {"scope_id": scope_id, "version": 2}),
+        last_id=last_event_id, transform=scope_delivery, reconcile=True), media_type="text/event-stream")

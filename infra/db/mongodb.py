@@ -37,8 +37,9 @@ class DocumentStore:
     def find_many(
         self, collection: str, query: dict[str, Any] | None = None,
         sort: list[tuple[str, int]] | None = None, limit: int | None = None,
+        projection: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        cursor = self._db[collection].find(query or {}, {"_id": False})
+        cursor = self._db[collection].find(query or {}, {**(projection or {}), "_id": False})
         if sort:
             cursor = cursor.sort(sort)
         if limit:

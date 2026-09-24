@@ -10,7 +10,7 @@ from domain.agent.plan.planAgent import PlanAgent
 from domain.agent_base import AgentBase
 from domain.context.context import ContextEngine
 from domain.event import Event, EventBusPort
-from domain.run_context import current_run_id
+from domain.run_context import current_run_id, current_execution_id
 from infra.db.mongodb import DocumentStore
 
 from application.services.agents import AgentFactoryService
@@ -18,6 +18,7 @@ from application.services.contexts import ContextService
 from application.events.bridge import FrontendEventBridge
 from application.events.schemas import step_failed_payload
 from application.services.events import EventStreamService
+from application.services.run_state import RunStateService
 
 
 class RecordingEventBus(EventBusPort):
@@ -38,18 +39,38 @@ class RecordingEventBus(EventBusPort):
 
 
 class ObservablePlanOrchestrator(PlanOrchestrator):
-    def __init__(self, *args, run_id: str, streams: EventStreamService, **kwargs) -> None:
+    def __init__(self, *args, run_id: str, streams: EventStreamService, states: RunStateService, **kwargs) -> None:
         self._run_id = run_id
         self._streams = streams
         self._reported_failed_steps: set[str] = set()
+        self._states = states
+        self._step_executions = {}
         super().__init__(*args, **kwargs)
+
+    async def _invoke_agent(self, agent, method, *args, step_id=""):
+        phase = "execute" if method == "start" else method
+        async with self._streams.execution(self._run_id, agent, phase=phase, step_id=step_id,
+                                           execution_id=self._step_executions.get(step_id)):
+            if step_id:
+                self._step_executions[step_id] = current_execution_id.get()
+            return await super()._invoke_agent(agent, method, *args, step_id=step_id)
+
+    async def _publish_event(self, name, payload):
+        step = payload.get("step") or {}
+        if name == "plan.step.started":
+            self._step_executions[step["step_id"]] = str(uuid.uuid4())
+        execution_id = self._step_executions.get(step.get("step_id"), "")
+        if payload.get("plan"):
+            self.state.plan = payload["plan"]
+            await self._states.update(self._run_id, {"plan": payload["plan"]})
+        await super()._publish_event(name, {**payload, "execution_id": execution_id,
+                                           "agent_id": step.get("executor_id", "")})
 
     async def _dispatch(self, action: dict) -> None:
         await super()._dispatch(action)
         event_name = action.get("event_dispatch", "workflow.event")
         payload = self._normalize_payload(action.get("playload", {}))
-        await self._streams.runtime.put_state("orchestration", self._run_id,
-                                             {"plan": self.state.plan, "executors": self.state.executors})
+        await self._states.update(self._run_id, {"plan": self.state.plan, "executors": self.state.executors})
         # The service emits the terminal event after durable finalization.
         if event_name != "workflow.finished":
             await self._streams.publish(self._run_id, event_name, payload)
@@ -64,19 +85,6 @@ class ObservablePlanOrchestrator(PlanOrchestrator):
                 normalized[key] = value
         return normalized
 
-    async def _run_plan_step(self, step, plan) -> None:
-        await super()._run_plan_step(step, plan)
-        if step.status == "failed":
-            await self._streams.publish(
-                self._run_id,
-                "agent.failed",
-                step_failed_payload(
-                    run_id=self._run_id,
-                    executor_id=step.executor_id,
-                    step=step.to_dict(),
-                ),
-            )
-
     async def _publish_failed_steps(self, payload: dict[str, Any]) -> None:
         steps = payload.get("plan", {}).get("steps", [])
         for step in steps:
@@ -89,11 +97,11 @@ class ObservablePlanOrchestrator(PlanOrchestrator):
             await self._streams.publish(
                 self._run_id,
                 "plan.step.failed",
-                step_failed_payload(
+                {**step_failed_payload(
                     run_id=self._run_id,
                     executor_id=step.get("executor_id", ""),
                     step=step,
-                ),
+                ), "execution_id": self._step_executions.get(step_id, "")},
             )
 
 
@@ -113,10 +121,19 @@ class RunOrchestrationService:
         self._frontend_bridge = frontend_bridge
         self._tasks: dict[str, asyncio.Task] = {}
         self.runtime = streams.runtime
+        self.states = RunStateService(store, self.runtime)
         self.runtime.on_orphan = self.handle_orphan
 
     async def handle_orphan(self, state):
         if state["kind"] != "orchestration":
+            return
+        record = self._store.find_one("runs", {"run_id": state["run_id"]})
+        if record is None:
+            await self.runtime.delete_runtime(state["run_id"])
+            return
+        if record.get("status") not in {"pending", "running"}:
+            await self.runtime.put_state("orchestration", state["run_id"],
+                                         {"status": record["status"], "cancel_requested": False})
             return
         await self._mark_run_cancelled(state, "执行进程失联，运行中断", True)
         for item in await self.runtime.confirmations(state["target_id"]):
@@ -124,6 +141,7 @@ class RunOrchestrationService:
                 item["run_id"], item["confirmation_id"], False, "执行进程失联")
             if changed:
                 await self._streams.publish(item["run_id"], "human.confirmation.resolved", resolved)
+        await self.states.finish_control(state["run_id"])
 
     async def create_run(
         self,
@@ -138,6 +156,9 @@ class RunOrchestrationService:
         message_id: str | None = None,
         auto_start: bool = True,
         pinned_context: list[str] | None = None,
+        scope_id: str | None = None,
+        im_conversation_id: str = "",
+        source_message_id: str = "",
     ) -> dict[str, Any]:
         run_id = str(uuid.uuid4())
         if mode not in {"react", "plan"}:
@@ -162,6 +183,11 @@ class RunOrchestrationService:
 
         record = {
             "run_id": run_id,
+            "kind": "orchestration",
+            "scope_id": scope_id or run_id,
+            "im_conversation_id": im_conversation_id,
+            "source_message_id": source_message_id,
+            "version": 2,
             "mode": mode,
             "prompt": prompt,
             "executor_agent_id": executor_agent_id,
@@ -178,20 +204,25 @@ class RunOrchestrationService:
             "started_at": None,
             "finished_at": None,
         }
-        self._store.insert_one("runs", record)
-        await self.runtime.put_state("orchestration", run_id, {**record, "owner_worker": ""})
+        await self.states.create(record)
         if auto_start:
             await self.start_run(run_id)
         return await self.get_run(run_id)
 
     async def start_run(self, run_id):
-        record = await self.get_run(run_id)
+        # Execution decisions must never depend on a potentially stale cache entry.
+        record = self._store.find_one("runs", {"run_id": run_id})
         if record is None:
             raise KeyError(run_id)
         if record.get("status") in {"finished", "failed", "cancelled"}:
             return record
         if not await self.runtime.claim("orchestration", run_id, record):
             return record
+        try:
+            await self._update_run(run_id, {"status": "running", "started_at": time.time()})
+        except Exception:
+            await self.runtime.put_state("orchestration", run_id, {"status": "failed"})
+            raise
         task = asyncio.create_task(self._execute_run(record))
         self._tasks[run_id] = task
         self.runtime.track("orchestration", run_id, task)
@@ -200,14 +231,9 @@ class RunOrchestrationService:
         return await self.get_run(run_id)
 
     async def _update_run(self, run_id, changes):
-        if changes.get("status") in {"finished", "failed", "cancelled"}:
-            changes = {**changes, "cancel_requested": False}
-        await self.runtime.put_state("orchestration", run_id, changes)
-        item = self._store.update_one("runs", {"run_id": run_id}, changes)
-        # IM messages remain the durable history projection.
-        for message in self._store.find_many("im_messages", {"run_id": run_id, "sender_type": "user"}):
-            self._store.update_one("im_messages", {"message_id": message["message_id"]},
-                                   {"status": changes.get("status", message.get("status"))})
+        item = await self.states.update(run_id, changes)
+        if "status" in changes:
+            await self._streams.publish(run_id, "task.updated", {"run_id": run_id, "status": changes["status"]})
         return item
 
     def _validate_planner(self, planner_agent_id: str) -> None:
@@ -226,24 +252,24 @@ class RunOrchestrationService:
 
     async def list_runs(self):
         records = self._store.find_many("runs", sort=[("created_at", -1)])
-        return [{**r, **(await self.runtime.get_state("orchestration", r["run_id"]) or {})} for r in records]
+        return [r for r in records if r.get("kind", "orchestration") == "orchestration"]
 
     async def get_run(self, run_id):
-        record = self._store.find_one("runs", {"run_id": run_id})
-        current = await self.runtime.get_state("orchestration", run_id)
-        return {**(record or {}), **(current or {})} if record or current else None
+        return await self.states.get(run_id)
 
     async def cancel_run(self, run_id, reason="用户中断"):
-        record = await self.get_run(run_id)
+        record = self._store.find_one("runs", {"run_id": run_id})
         if record is None:
             raise KeyError(f"Run 不存在: {run_id}")
         if record.get("status") not in {"pending", "running"}:
             return record
-        if not await self.runtime.get_state("orchestration", run_id):
-            await self.runtime.put_state("orchestration", run_id, {**record, "owner_worker": ""})
-        if not record.get("owner_worker"):
-            return await self._mark_run_cancelled(record, reason, True)
-        return await self.runtime.request_cancel("orchestration", run_id)
+        control = await self.runtime.get_state("orchestration", run_id)
+        if not control or not control.get("owner_worker"):
+            item = await self._mark_run_cancelled(record, reason, True)
+            await self.states.finish_control(run_id)
+            return item
+        await self.runtime.request_cancel("orchestration", run_id)
+        return {**record, "cancel_requested": True}
 
     async def _execute_run(self, record: dict[str, Any]) -> None:
         run_id = record["run_id"]
@@ -251,7 +277,6 @@ class RunOrchestrationService:
         # 避免并发 run 下 agent_id -> run_id 全局映射 last-writer-wins 串扰。finally 中 reset。
         token = current_run_id.set(run_id)
         try:
-            await self._update_run(run_id, {"status": "running", "started_at": time.time()})
             if record.get("mode") == "react":
                 await self._execute_react_run(record)
             else:
@@ -270,6 +295,7 @@ class RunOrchestrationService:
                 self._frontend_bridge.unregister_agent_run(executor_id, run_id)
             self._tasks.pop(run_id, None)
             current_run_id.reset(token)
+            await self.states.finish_control(run_id)
 
     async def _execute_react_run(self, record: dict[str, Any]) -> None:
         run_id = record["run_id"]
@@ -287,7 +313,8 @@ class RunOrchestrationService:
             "workflow.started",
             {"run_id": run_id, "mode": "react", "prompt": record["prompt"], "executor_id": executor_id},
         )
-        await executor.start_with_history(record["prompt"])
+        async with self._streams.execution(run_id, executor):
+            await executor.start_with_history(record["prompt"])
         final = executor.states.get("final", "")
         finish_reason = executor.states.get("finish_reason", "React Agent 执行完成")
         await self._update_run(run_id, {
@@ -336,6 +363,7 @@ class RunOrchestrationService:
             max_replan_rounds=record["max_replan_rounds"],
             run_id=run_id,
             streams=self._streams,
+            states=self.states,
         )
         await orchestrator.start(record["prompt"])
         await self._update_run(run_id, {

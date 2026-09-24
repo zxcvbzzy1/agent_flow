@@ -7,6 +7,7 @@ from typing import Any
 # finally 中 reset。FrontendEventBridge.run_id_for_agent 优先读它，避免并发 run 下
 # agent_id -> run_id 全局映射的 last-writer-wins 串扰。
 current_run_id: ContextVar[str] = ContextVar("current_run_id", default="")
+current_execution_id: ContextVar[str] = ContextVar("current_execution_id", default="")
 
 # 当前正在 emit 工具事件的 agent 实例（per-run 隔离）。在 AgentBase._run_one 围绕 emit
 # set/reset，工具回调（on_tool_success/on_tool_fail/recall_skill）优先读它，避免并发 run 下
