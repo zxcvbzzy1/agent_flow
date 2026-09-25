@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
+import logging
 import os
 import time
 import uuid
@@ -12,10 +12,7 @@ from contextlib import suppress
 from redis.asyncio import Redis
 from .control import RedisExecutionControl
 from .state_cache import RunStateCache
-
-
-def encode(value):
-    return json.dumps(value, ensure_ascii=False, default=str)
+from .event_journal import EventJournal, encode, ordered
 
 
 class RedisRuntime(RedisExecutionControl):
@@ -35,6 +32,7 @@ class RedisRuntime(RedisExecutionControl):
         self._maintenance = None
         self.on_orphan = None
         self.cache = RunStateCache(self.redis, self.key)
+        self.journal = EventJournal(self)
 
     def key(self, suffix):
         return f"{self.prefix}:{suffix}"
@@ -44,7 +42,15 @@ class RedisRuntime(RedisExecutionControl):
             return
         try:
             await self.redis.ping()
+            version = (await self.redis.info("server"))["redis_version"]
+            if tuple(int(v) for v in version.split(".")[:2]) < (6, 2):
+                raise RuntimeError("Event archiving requires Redis >= 6.2")
+            self.journal.aof_enabled = bool((await self.redis.info('persistence')).get('aof_enabled'))
+            if self.journal.store is not None and not self.journal.aof_enabled:
+                logging.getLogger(__name__).warning(
+                    'Redis AOF is disabled: enable appendonly yes before deploying asynchronous event archiving')
             await self._heartbeat()
+            await self.journal.start()
         except Exception:
             await self.redis.aclose()
             raise
@@ -60,90 +66,120 @@ class RedisRuntime(RedisExecutionControl):
             with suppress(asyncio.CancelledError):
                 await self._maintenance
             self._maintenance = None
+        await self.journal.close()
         try:
             await self.redis.delete(self.key(f"worker:{self.worker_id}"))
         finally:
             await self.redis.aclose()
 
-    async def append(self, category, scope_id, event):
-        key = self.event_key(category, scope_id)
-        cutoff = f"{max(0, int((time.time() - self.retention) * 1000))}-0"
-        async with self.redis.pipeline(transaction=True) as pipe:
-            pipe.xadd(key, {"event": encode(event)}, maxlen=self.maxlen, approximate=True)
-            pipe.xtrim(key, minid=cutoff, approximate=True)
-            pipe.expire(key, self.retention)
-            result = await pipe.execute()
-        return result[0]
+    async def append(self, category, scope_id, event, *, durable=False):
+        if durable and self._maintenance is not None:
+            await self.journal.start()
+        return await self.journal.append(category, scope_id, event, durable=durable)
 
     def event_key(self, category, scope_id):
-        return self.key(f"events:v2:{category}:{scope_id}")
+        return self.journal.keys(category, scope_id)[0]
 
     @staticmethod
     def sse(event, cursor=None):
         prefix = f"id: {cursor}\n" if cursor is not None else ""
         return f"{prefix}event: {event['name']}\ndata: {encode(event)}\n\n"
 
-    async def stream(self, category, scope_id, history, *, last_id=None, transform=None, reconcile=False):
-        """One cursor per delivered stream; no consumer group and no replay side effects."""
-        key = self.event_key(category, scope_id)
-        await self.redis.xtrim(key, minid=f"{max(0, int((time.time() - self.retention) * 1000))}-0",
-                               approximate=False)
-        first = await self.redis.xrange(key, count=1)
-        last = await self.redis.xrevrange(key, count=1)
-        high = last[0][0] if last else "0-0"
-        valid = False
-        if last_id:
-            try:
-                cursor_tuple = tuple(map(int, last_id.split("-")))
-                valid = len(cursor_tuple) == 2 and bool(first) and (
-                    tuple(map(int, first[0][0].split("-"))) <= cursor_tuple <= tuple(map(int, high.split("-")))
-                )
-            except ValueError:
-                pass
+    async def stream(self, category, scope_id, history, *, last_id=None, transform=None,
+                     reconcile=False, user_id='service'):
+        """Opaque generation/cursor IDs; each reader gets every event independently.
+
+        ``reconcile`` is retained for caller compatibility; complete cached history
+        replaces the former unconditional DB reconciliation.
+        """
+        keys = self.journal.keys(category, scope_id)
+        key, meta = keys[:2]
+        await self.redis.hsetnx(meta, 'generation', uuid.uuid4().hex)
+        generation = await self.redis.hget(meta, 'generation')
         seen = set()
-        if last_id and not valid:
-            yield self.sse({"name": "stream.reset", "payload": {"reason": "cursor_expired"}})
-        if not valid or reconcile:
-            archived = history()
-            if inspect.isawaitable(archived):
-                archived = await archived
-            buffered = []
-            cursor = "-"
-            while high != "0-0":
-                batch = await self.redis.xrange(key, min=cursor, max=high, count=500)
-                if not batch:
-                    break
-                buffered.extend(json.loads(fields["event"]) for _, fields in batch)
-                cursor = "(" + batch[-1][0]
-            for event in sorted([*archived, *buffered], key=lambda e: e.get("created_at", 0)):
-                if event["event_id"] in seen:
-                    continue
-                seen.add(event["event_id"])
-                delivered = transform(event) if transform else event
-                if delivered is not None:
-                    yield self.sse(delivered)
-            last_id = high
-        yield self.sse({"name": "stream.ready", "payload": {"scope_id": scope_id}}, last_id)
-        # Retain bootstrap IDs until the first empty read: an archive write can precede XADD.
         while True:
-            batches = await self.redis.xread({key: last_id}, count=200, block=15000)
-            if not batches:
-                seen.clear()
-                yield ": heartbeat\n\n"
-            for _, entries in batches:
-                for cursor, fields in entries:
-                    event = json.loads(fields["event"])
-                    last_id = cursor
-                    if event["event_id"] in seen:
-                        yield f"id: {cursor}\n\n"
+            await self.redis.xtrim(key, minid=f"{max(0, int((time.time() - self.retention) * 1000))}-0",
+                                   approximate=False)
+            first = await self.redis.xrange(key, count=1)
+            # ``high`` is the legacy name. Take the newer value while old and
+            # new workers overlap during a rolling restart.
+            watermark = self.journal.latest_stream_id(
+                *(await self.redis.hmget(meta, 'watermark', 'high')))
+            cursor = '0-0'
+            valid = False
+            if last_id:
+                try:
+                    prior_generation, cursor = last_id.split('/', 1)
+                    position = tuple(map(int, cursor.split('-')))
+                    watermark_position = tuple(map(int, watermark.split('-')))
+                    valid = (prior_generation == generation and len(position) == 2 and
+                             all(v >= 0 for v in position) and position <= watermark_position and
+                             ((cursor == watermark == '0-0') or (bool(first) and
+                              tuple(map(int, first[0][0].split('-'))) <= position)))
+                except (ValueError, AttributeError):
+                    valid = False
+            if not valid:
+                yield self.sse({'name': 'stream.reset', 'payload': {
+                    'reason': 'cursor_expired' if last_id else 'initial'}}, '')
+                archived, cursor, generation = await self.journal.snapshot(
+                    category, scope_id, history, user_id=user_id)
+                # The durable snapshot is never trimmed. Only transient events
+                # need the bounded live stream during bootstrap.
+                buffered = []
+                start = '-'
+                while cursor != '0-0':
+                    batch = await self.redis.xrange(key, min=start, max=cursor, count=500)
+                    if not batch:
+                        break
+                    buffered.extend(json.loads(fields['event']) for _, fields in batch)
+                    start = '(' + batch[-1][0]
+                deleted = await self.redis.smembers(keys[4])
+                for event in ordered([*archived, *buffered]):
+                    if event['event_id'] in seen or '*' in deleted or event['event_id'] in deleted:
                         continue
+                    seen.add(event['event_id'])
                     delivered = transform(event) if transform else event
-                    yield self.sse(delivered, cursor) if delivered is not None else f"id: {cursor}\n\n"
+                    if delivered is not None:
+                        yield self.sse(delivered)
+            await self.journal.touch(category, scope_id, user_id)
+            yield self.sse({'name': 'stream.ready', 'payload': {'scope_id': scope_id}},
+                           f'{generation}/{cursor}')
+            while True:
+                batches = await self.redis.xread({key: cursor}, count=200, block=15000)
+                current_generation = await self.redis.hget(meta, 'generation')
+                # A deletion invalidates both persisted browser snapshots and
+                # connections already open, even if there are no new events.
+                if current_generation != generation:
+                    last_id = f'{generation}/{cursor}'
+                    generation = current_generation
+                    seen.clear()
+                    break
+                if batches:
+                    # Detect a slow reader falling behind live retention/maxlen.
+                    first = await self.redis.xrange(key, count=1)
+                    if cursor != '0-0' and first and tuple(map(int, cursor.split('-'))) < tuple(map(int, first[0][0].split('-'))):
+                        last_id = f'{generation}/{cursor}'
+                        seen.clear()
+                        break
+                if not batches:
+                    seen.clear()
+                    await self.journal.touch(category, scope_id, user_id)
+                    yield ': heartbeat\n\n'
+                for _, entries in batches:
+                    for cursor, fields in entries:
+                        event = json.loads(fields['event'])
+                        checkpoint = f'{generation}/{cursor}'
+                        if event['event_id'] in seen:
+                            yield self.sse({'name': 'stream.checkpoint', 'payload': {}}, checkpoint)
+                            continue
+                        delivered = transform(event) if transform else event
+                        yield self.sse(delivered, checkpoint) if delivered is not None else self.sse({'name': 'stream.checkpoint', 'payload': {}}, checkpoint)
 
     async def delete_runtime(self, runtime_scope_id, *, kind="orchestration", target_id=None):
         for item in await self.confirmations(runtime_scope_id):
             await self.redis.delete(self.key(f"confirmation:{item['confirmation_id']}"))
         await self.cache.invalidate(runtime_scope_id)
+        await self.journal.delete("run", runtime_scope_id)
         target_id = target_id or runtime_scope_id
         await self.redis.delete(self.event_key("run", runtime_scope_id),
                                 self.key(f"control:v2:{kind}:{target_id}"),
@@ -151,13 +187,4 @@ class RedisRuntime(RedisExecutionControl):
         await self.redis.srem(self.key("control:v2:active"), f"{kind}:{target_id}")
 
     async def remove_projected(self, scope_id, predicate):
-        key = self.event_key("scope", scope_id)
-        cursor = "-"
-        while True:
-            batch = await self.redis.xrange(key, min=cursor, count=500)
-            if not batch:
-                return
-            ids = [rid for rid, fields in batch if predicate(json.loads(fields['event']))]
-            if ids:
-                await self.redis.xdel(key, *ids)
-            cursor = "(" + batch[-1][0]
+        return await self.journal.delete('scope', scope_id, predicate)

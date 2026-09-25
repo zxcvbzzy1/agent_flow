@@ -19,8 +19,10 @@ class HumanConfirmationService:
                     tool_name=tool_name, called_event_name=called_event_name,
                     arguments=arguments, status="pending", created_at=time.time())
         await self.runtime.save_confirmation(item)
-        await self._streams.publish(run_id, "human.confirmation.requested", item)
         try:
+            # Publication now awaits Redis queueing; cancellation in that window
+            # must resolve the already-created shared approval as well.
+            await self._streams.publish(run_id, "human.confirmation.requested", item)
             while True:
                 current = await self.runtime.get_confirmation(item["confirmation_id"])
                 if not current:

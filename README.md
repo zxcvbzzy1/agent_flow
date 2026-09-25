@@ -590,5 +590,7 @@ infra/
 查询和取消均为异步接口。工具内部事件总线保持原有机制；前端镜像需要等待 Redis 写入。
 
 `GET /api/runs/{run_id}/events` 支持 `Last-Event-ID`，不会在第一条终态历史事件处结束，
-而是保持连接并发送心跳。非增量历史仍保留在 Mongo，当前运行状态在 Redis。
+而是保持连接并发送心跳。事件由 Redis Stream 消费组异步归档到 Mongo；完整历史缓存按用户/服务身份隔离，闲置两天过期。
+运行状态仍以 Mongo 为准，RunStateCache 保持先写 DB、再失效/回填缓存。
+SSE 同时支持 `last_id` 查询参数，游标为带代次的不透明字符串；详情见 [事件缓存与归档](../im_backend/README.md#事件缓存与异步归档v3)。
 部署、续传和验证方式见 [IM 后端说明](../im_backend/README.md#redis-运行时第一阶段)。

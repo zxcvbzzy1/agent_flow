@@ -49,14 +49,15 @@ class RunStateService:
                     break
             else:
                 raise ValueError('执行仍在停止中，请稍后重试删除')
+        event_count = await self.runtime.journal.delete('run', run_id)
+        scope_id = record.get('scope_id') or run_id
+        scope_count = await self.runtime.remove_projected(scope_id, lambda event: event.get('run_id') == run_id)
         stats = {
-            'events': self.store.delete_many('events', {'run_id': run_id}),
-            'scope_events': self.store.delete_many('im_events', {'run_id': run_id}),
+            'events': event_count,
+            'scope_events': scope_count,
             'runs': self.store.delete_one('runs', {'run_id': run_id}),
         }
         await self.runtime.delete_runtime(run_id, kind=kind)
-        scope_id = record.get('scope_id') or run_id
-        await self.runtime.remove_projected(scope_id, lambda event: event.get('run_id') == run_id)
         return stats
 
     async def finish_control(self, run_id):

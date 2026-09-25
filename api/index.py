@@ -69,6 +69,7 @@ def create_app() -> FastAPI:
             "status": "ok",
             "mongo": "mongodb",
             "redis": "ok",
+            "event_archive": await container.runtime.journal.stats(),
         }
 
     return app

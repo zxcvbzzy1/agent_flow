@@ -74,10 +74,11 @@ async def cancel_run(
 async def stream_run_events(
     run_id: str,
     last_event_id: str | None = Header(default=None),
+    last_id: str | None = None,
     service: EventStreamService = Depends(get_event_service),
 ):
     return StreamingResponse(
-        service.stream(run_id, last_id=last_event_id),
+        service.stream(run_id, last_id=last_event_id or last_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
@@ -114,6 +115,7 @@ async def resolve_run_confirmation(
 async def stream_run_business_events(
     run_id: str,
     last_event_id: str | None = Header(default=None),
+    last_id: str | None = None,
     service: EventStreamService = Depends(get_event_service),
 ):
     from application.services.events import scope_delivery
@@ -123,4 +125,4 @@ async def stream_run_business_events(
     scope_id = run.get("scope_id") or run_id
     return StreamingResponse(service.runtime.stream(
         "scope", scope_id, lambda: service._store.find_many("im_events", {"scope_id": scope_id, "version": 2}),
-        last_id=last_event_id, transform=scope_delivery, reconcile=True), media_type="text/event-stream")
+        last_id=last_event_id or last_id, transform=scope_delivery), media_type="text/event-stream")

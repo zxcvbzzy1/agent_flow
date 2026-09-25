@@ -308,7 +308,7 @@ async def test_cancel_pending_run_marks_cancelled_and_publishes_workflow_failed(
     assert response.json()["item"]["status"] == "cancelled"
     stored = (await client.get(f"/api/runs/{run['run_id']}")).json()["item"]
     assert stored["status"] == "cancelled"
-    events = container.store.find_many("im_events", {"run_id": run["run_id"]}, sort=[("created_at", 1)])
+    events = await container.runtime.journal.events("scope", run.get("scope_id") or run["run_id"])
     assert events[-1]["name"] == "workflow.failed"
     assert events[-1]["payload"]["cancelled"] is True
     assert (await client.post(f"/api/runs/{run['run_id']}/cancel")).status_code == 202
@@ -611,7 +611,7 @@ async def test_delete_conversation_cascades_messages_runs_and_events(backend, st
     assert container.store.find_one("conversations", {"conversation_id": conversation["conversation_id"]}) is None
     assert container.store.find_many("messages", {"conversation_id": conversation["conversation_id"]}) == []
     assert container.store.find_one("runs", {"run_id": run["run_id"]}) is None
-    assert container.events.list_events(run["run_id"]) == []
+    assert (await container.events.list_events(run["run_id"])) == []
 
 
 @pytest.mark.asyncio
@@ -668,7 +668,7 @@ async def test_delete_agent_cleans_runtime_and_related_runs(backend, standalone_
     assert container.store.find_one("agents", {"agent_id": agent["agent_id"]}) is None
     assert agent["agent_id"] not in container.agents._agents
     assert container.store.find_one("runs", {"run_id": run["run_id"]}) is None
-    assert container.events.list_events(run["run_id"]) == []
+    assert (await container.events.list_events(run["run_id"])) == []
     assert (await client.delete("/api/agents/default_executor")).status_code == 400
 
 
@@ -679,7 +679,7 @@ async def test_event_stream_service_formats_historical_finished_event(backend):
     await container.events.publish(run_id, "workflow.started", {"ok": True})
     await container.events.publish(run_id, "workflow.finished", {"final": "done"})
 
-    events = container.store.find_many("im_events", {"run_id": run_id}, sort=[("created_at", 1)])
+    events = await container.runtime.journal.events("scope", run_id)
 
     assert [event["name"] for event in events] == ["workflow.started", "workflow.finished"]
     assert "event: workflow.finished" in container.events.format_sse(events[-1])
@@ -704,7 +704,7 @@ async def test_frontend_bridge_mirrors_tool_events_to_run_stream(backend):
         )
     )
 
-    events = container.events.list_events(run_id)
+    events = (await container.events.list_events(run_id))
 
     assert [event["name"] for event in events[-2:]] == ["tool.called", "tool.failed"]
     assert events[-1]["payload"]["respond"] == "no"
@@ -733,7 +733,7 @@ async def test_frontend_bridge_mirrors_artifacts_event_to_run_stream(backend):
         )
     )
 
-    events = container.events.list_events(run_id)
+    events = (await container.events.list_events(run_id))
 
     assert events[-1]["name"] == "artifacts.document"
     assert events[-1]["payload"]["frontend_event_name"] == "artifacts.document"
@@ -806,7 +806,7 @@ async def test_inline_artifact_tool_called_event_publishes_artifact_sse(backend)
         )
     )
 
-    events = container.events.list_events(run_id)
+    events = (await container.events.list_events(run_id))
     event_names = [event["name"] for event in events]
 
     assert "tool.called" in event_names
@@ -846,7 +846,7 @@ async def test_human_confirmation_can_be_requested_and_resolved(backend):
         reason="ok",
     )
     result = await task
-    events = container.events.list_events(run_id)
+    events = (await container.events.list_events(run_id))
 
     assert result == {"approved": True, "reason": "ok"}
     assert resolved["approved"] is True
@@ -1023,7 +1023,7 @@ async def test_streaming_observable_llm_publishes_executor_delta_and_structured_
         )
 
         result = await llm.chat([{"role": "system", "content": "executor"}, {"role": "user", "content": "go"}])
-        events = container.events.list_events(run_id)
+        events = (await container.events.list_events(run_id))
         names = [event["name"] for event in events]
 
         assert result == "".join(chunks)
@@ -1064,7 +1064,7 @@ async def test_streaming_observable_llm_publishes_planner_events(backend):
                 {"role": "user", "content": "go"},
             ]
         )
-        events = container.events.list_events(run_id)
+        events = (await container.events.list_events(run_id))
         plan_event = [event for event in events if event["name"] == "planner.plan.generated"][-1]
 
         assert result == "".join(chunks)

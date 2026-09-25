@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
-from pymongo import MongoClient, ReturnDocument
-from pymongo.errors import PyMongoError
+from pymongo import MongoClient, ReturnDocument, UpdateOne
+from pymongo.errors import PyMongoError, BulkWriteError
 
 
 class DocumentStore:
@@ -19,6 +21,11 @@ class DocumentStore:
             self._client.close()
             raise RuntimeError("MongoDB 不可用，请启动数据库并检查连接配置") from None
         self._db = self._client[db_name]
+        # Credential rotation must not strand a pending archive queue. Scope by
+        # deployment endpoints and database, never username/password or auth options.
+        endpoint = urlsplit(mongo_url)
+        identity = f"{endpoint.scheme}://{endpoint.netloc.rsplit('@', 1)[-1].lower()}/{db_name}"
+        self.event_namespace = hashlib.sha256(identity.encode()).hexdigest()[:24]
 
     def ping(self) -> None:
         self._client.admin.command("ping")
@@ -45,6 +52,21 @@ class DocumentStore:
         if limit:
             cursor = cursor.limit(limit)
         return list(cursor)
+
+    def upsert_events(self, collection: str, events: list[dict]) -> set[str]:
+        """Return only positively acknowledged IDs; unknown outcomes are retried."""
+        if not events:
+            return set()
+        operations = [UpdateOne({'event_id': e['event_id']}, {'$setOnInsert': copy.deepcopy(e)}, upsert=True)
+                      for e in events]
+        try:
+            result = self._db[collection].bulk_write(operations, ordered=False)
+            return {e['event_id'] for e in events} if result.acknowledged else set()
+        except BulkWriteError as exc:
+            if exc.details.get('writeConcernErrors'):
+                return set()
+            failed = {item['index'] for item in exc.details.get('writeErrors', [])}
+            return {e['event_id'] for i, e in enumerate(events) if i not in failed}
 
     def ensure_index(self, collection: str, keys: list[tuple[str, int]], **kwargs: Any) -> None:
         # Unique indexes enforce business invariants: failure must not be hidden.

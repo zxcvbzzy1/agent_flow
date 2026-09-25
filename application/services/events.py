@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -11,7 +10,6 @@ from redis.exceptions import RedisError
 from domain.run_context import current_execution_id
 from infra.runtime import RedisRuntime
 
-log = logging.getLogger(__name__)
 DELTAS = {'llm.delta', 'agent.delta'}
 BUSINESS_EVENTS = {
     'workflow.started', 'workflow.finished', 'workflow.failed', 'run.cancelled',
@@ -44,19 +42,21 @@ class EventStreamService:
     def __init__(self, store, runtime: RedisRuntime | None = None):
         self._store = store
         self.runtime = runtime or RedisRuntime()
+        self.runtime.journal.bind(store)
         self._subscribers = []
 
     def subscribe(self, callback):
         self._subscribers.append(callback)
 
-    async def _broadcast(self, category, scope_id, event):
+    async def _broadcast(self, category, scope_id, event, *, durable=False):
         for attempt in range(3):
             try:
-                return await asyncio.wait_for(self.runtime.append(category, scope_id, event), 1)
+                return await asyncio.wait_for(self.runtime.append(category, scope_id, event, durable=durable), 5)
             except (RedisError, OSError, TimeoutError):
                 if attempt < 2:
                     await asyncio.sleep((0.05, 0.15)[attempt])
-        log.error('Event delivery failed; archived events recover on reconnect: %s', event['event_id'])
+                else:
+                    raise
 
     def _event(self, run_id, name, payload):
         run = self._store.find_one('runs', {'run_id': run_id}) or {}
@@ -74,8 +74,7 @@ class EventStreamService:
             event = await self.publish_scope(base['scope_id'], name, payload, context=base)
         else:
             event = self._event(run_id, name, payload)
-            self._store.insert_one('events', event)
-            await self._broadcast('run', run_id, event)
+            await self._broadcast('run', run_id, event, durable=True)
             # Only explicit product notifications are projected, never raw traces.
             if name.startswith(('artifacts.', 'human.confirmation.')):
                 notification = dict(payload)
@@ -123,8 +122,7 @@ class EventStreamService:
             body.setdefault('run_id', run_id)
         if event['message_id']:
             body.setdefault('message_id', event['message_id'])
-        self._store.insert_one('im_events', event)
-        await self._broadcast('scope', scope_id, event)
+        await self._broadcast('scope', scope_id, event, durable=True)
         return event
 
     async def no_store_publish(self, run_id, name, payload):
@@ -155,42 +153,32 @@ class EventStreamService:
         finally:
             current_execution_id.reset(token)
 
-    def list_events(self, run_id):
-        return self._store.find_many('events', {'run_id': run_id}, sort=[('created_at', 1), ('event_id', 1)])
+    async def list_events(self, run_id, *, user_id='service'):
+        return await self.runtime.journal.events('run', run_id, user_id=user_id)
 
-    def summaries(self, run_id, *, execution_id=None, after=None, limit=100):
-        query = {'run_id': run_id, 'version': 2, 'name': {'$nin': list(DELTAS)}}
-        if execution_id:
-            query['execution_id'] = execution_id
-        if after:
-            anchor = self._store.find_one('events', {'run_id': run_id, 'event_id': after})
-            if not anchor:
-                raise KeyError('事件游标不存在')
-            query['$or'] = [{'created_at': {'$gt': anchor['created_at']}},
-                            {'created_at': anchor['created_at'], 'event_id': {'$gt': after}}]
-        items = self._store.find_many('events', query, sort=[('created_at', 1), ('event_id', 1)],
-                                      limit=limit + 1, projection={key: True for key in SUMMARY_FIELDS})
+    async def summaries(self, run_id, *, execution_id=None, after=None, limit=100, user_id='service'):
+        events = await self.list_events(run_id, user_id=user_id)
+        anchor = next((e for e in events if e['event_id'] == after), None) if after else None
+        if after and anchor is None:
+            raise KeyError('事件游标不存在')
+        items = [e for e in events if event_summary(e) is not None
+                 and (not execution_id or e.get('execution_id') == execution_id)
+                 and (not anchor or (e.get('created_at', 0), e['event_id']) >
+                      (anchor.get('created_at', 0), anchor['event_id']))]
         return {'items': [event_summary(e) for e in items[:limit]],
                 'next_cursor': items[limit - 1]['event_id'] if len(items) > limit else None}
 
-    def get_event(self, run_id, event_id):
-        return self._store.find_one('events', {'run_id': run_id, 'event_id': event_id})
+    async def get_event(self, run_id, event_id, *, user_id='service'):
+        return next((e for e in await self.list_events(run_id, user_id=user_id) if e['event_id'] == event_id), None)
 
-    async def stream(self, run_id, last_id=None, *, summary=False, execution_id=None):
+    async def stream(self, run_id, last_id=None, *, summary=False, execution_id=None, user_id='service'):
         def transform(event):
             if execution_id and event.get('execution_id') != execution_id:
                 return None
             return event_summary(event) if summary else event
-        def history():
-            if not summary:
-                return self.list_events(run_id)
-            query = {'run_id': run_id, 'version': 2, 'name': {'$nin': list(DELTAS)}}
-            if execution_id:
-                query['execution_id'] = execution_id
-            return self._store.find_many('events', query, sort=[('created_at', 1), ('event_id', 1)],
-                                         projection={key: True for key in SUMMARY_FIELDS})
-        async for raw in self.runtime.stream('run', run_id, history, last_id=last_id,
-                                             transform=transform, reconcile=summary):
+        async for raw in self.runtime.stream('run', run_id,
+                lambda: self.runtime.journal.history('run', run_id), last_id=last_id,
+                transform=transform, user_id=user_id):
             yield raw
 
     def format_sse(self, event, cursor=None):
