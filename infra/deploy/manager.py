@@ -122,7 +122,7 @@ class DeploymentManager:
 
         两种工作目录来源：
           - 不传 source_dir：在 DEPLOY_ROOT/<id> 新建工作目录，把 files 落地进去（native deploy 工具用）。
-          - 传 source_dir：直接托管/运行一个**已存在的目录**（coding agent 在自己 workdir 里建好的产物），
+          - 传 source_dir：直接托管/运行一个**已存在的目录**（Agent 在 workdir 里建好的产物），
             source_dir 相对 base_dir 解析并做越界防护；仍允许 files 往该目录补写启动文件。
         """
         kind = (kind or "").strip().lower()
@@ -482,7 +482,7 @@ class DeploymentManager:
                 await self.stop(deployment.deployment_id)
 
 
-# ── 事件 payload 构造（native deploy 工具与 coding executor 共用，保证形状一致）──
+# ── native deploy 工具的事件 payload 构造 ──
 def build_deploy_artifact(deployment: Deployment) -> dict[str, Any]:
     """契约 B 的 deploy artifact 对象。"""
     return {

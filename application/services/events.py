@@ -10,7 +10,7 @@ from redis.exceptions import RedisError
 from domain.run_context import current_execution_id
 from infra.runtime import RedisRuntime
 
-DELTAS = {'llm.delta', 'agent.delta'}
+DELTAS = {'llm.delta'}
 BUSINESS_EVENTS = {
     'workflow.started', 'workflow.finished', 'workflow.failed', 'run.cancelled',
     'plan.generated', 'plan.replanned', 'wave.completed', 'plan.wave.completed',

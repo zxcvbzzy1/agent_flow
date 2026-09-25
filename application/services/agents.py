@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
 from typing import Any
 
 from domain.agent.plan.planAgent import PlanAgent
@@ -67,13 +66,11 @@ class AgentFactoryService:
         context_service: ContextService,
         llm_client: LLM_Client,
         events: EventStreamService | None = None,
-        external_executor_builder: Callable[[dict[str, Any]], AgentBase] | None = None,
     ) -> None:
         self._store = store
         self._contexts = context_service
         self._llm = llm_client
         self._events = events
-        self._external_executor_builder = external_executor_builder
         self._agents: dict[str, AgentBase | PlanAgent] = {}
         self.ensure_default_agents()
 
@@ -130,6 +127,8 @@ class AgentFactoryService:
     ) -> dict[str, Any]:
         if agent_type not in {"planner", "executor"}:
             raise ValueError("agent_type 必须是 planner 或 executor")
+        metadata = metadata or {}
+        self._ensure_native_metadata(metadata)
         self._contexts.get_engine(context_id)
         agent_id = agent_id or str(uuid.uuid4())
         record = {
@@ -138,7 +137,7 @@ class AgentFactoryService:
             "agent_type": agent_type,
             "context_id": context_id,
             "role_prompt": role_prompt,
-            "metadata": metadata or {},
+            "metadata": metadata,
         }
         self._store.update_one("agents", {"agent_id": agent_id}, record, upsert=True)
         self._agents[agent_id] = self._build_agent(record)
@@ -171,6 +170,7 @@ class AgentFactoryService:
         if role_prompt is not None:
             updates["role_prompt"] = role_prompt
         if metadata is not None:
+            self._ensure_native_metadata(metadata)
             updates["metadata"] = metadata
         if updates:
             self._store.update_one("agents", {"agent_id": agent_id}, updates)
@@ -189,6 +189,13 @@ class AgentFactoryService:
         if agent_type not in {"planner", "executor"}:
             raise ValueError("agent_type 必须是 planner 或 executor")
 
+        agent_metadata = {
+            "description": getattr(agent, "description", ""),
+            "imported_agent_class": type(agent).__name__,
+            **(metadata or {}),
+        }
+        self._ensure_native_metadata(agent_metadata)
+
         context_id = context_id or f"{agent.id}_context"
         context_kind = "planner" if agent_type == "planner" else "executor"
         self._contexts.create_context_from_engine(
@@ -198,11 +205,6 @@ class AgentFactoryService:
             context_id=context_id,
         )
 
-        agent_metadata = {
-            "description": getattr(agent, "description", ""),
-            "imported_agent_class": type(agent).__name__,
-            **(metadata or {}),
-        }
         record = {
             "agent_id": agent.id,
             "name": agent.name,
@@ -217,7 +219,11 @@ class AgentFactoryService:
         return record
 
     def list_agents(self) -> list[dict[str, Any]]:
-        return self._store.find_many("agents", sort=[("created_at", 1)])
+        return [
+            record
+            for record in self._store.find_many("agents", sort=[("created_at", 1)])
+            if (record.get("metadata") or {}).get("agent_kind", "native") == "native"
+        ]
 
     def get_agent_record(self, agent_id: str) -> dict[str, Any] | None:
         return self._store.find_one("agents", {"agent_id": agent_id})
@@ -309,6 +315,9 @@ class AgentFactoryService:
         per-run 路径（build_run_agent）传入 build_engine 产出的全新独立 engine。
         agent.id 始终为逻辑 id（record["agent_id"]）。
         """
+        agent_kind = (record.get("metadata") or {}).get("agent_kind", "native")
+        if agent_kind != "native":
+            raise ValueError(f"不支持的 Agent 类型: {agent_kind}；当前仅支持 native")
         llm = self._build_llm(record)
         if record.get("agent_type") == "planner":
             agent = PlanAgent(
@@ -317,10 +326,6 @@ class AgentFactoryService:
                 llm=llm,
                 context=engine,
             )
-        elif (record.get("metadata") or {}).get("agent_kind") in {"claude_code", "codex"}:
-            if self._external_executor_builder is None:
-                raise ValueError("缺少第三方 executor builder")
-            agent = self._external_executor_builder(record)
         else:
             agent = APIExecutorAgent(
                 id=record["agent_id"],
@@ -347,3 +352,9 @@ class AgentFactoryService:
             agent_name=record["name"],
             agent_type=record.get("agent_type", "executor"),
         )
+
+    @staticmethod
+    def _ensure_native_metadata(metadata: dict[str, Any]) -> None:
+        agent_kind = metadata.get("agent_kind", "native")
+        if agent_kind != "native":
+            raise ValueError(f"不支持的 Agent 类型: {agent_kind}；当前仅支持 native")

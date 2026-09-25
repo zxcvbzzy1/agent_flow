@@ -10,7 +10,7 @@ tags: deploy, 部署, web, 网页, frontend, html, 上线, 预览
 2. 确认入口文件存在（默认 `index.html`）。
 3. 产出 deploy 产物（kind=static）：`source_dir` 指向该静态目录（相对工作目录），`entry` 默认 `index.html`。
    - native ReACT agent：调用 `deploy` 工具，kind=static。
-   - coding agent：在最终回复里输出 deploy 标记块。
+   - native Agent：调用部署工具生成 deploy 产物。
 4. 不要用 web 预览冒充部署——只有 deploy 才会真正开端口并生成可关闭/重启的部署卡片。
 5. 部署成功后，卡片会展示实时预览地址；端口被空闲回收或手动关闭后，用户可在卡片上一键“部署”重新拉起。
 

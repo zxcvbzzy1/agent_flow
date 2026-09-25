@@ -12,7 +12,6 @@ from domain.agent.plan.providers import (
 )
 from domain.context.context import ContextEngine
 from domain.context.providers import (
-    ArtifactProtocolProvider,
     AvailableToolsProvider,
     ErrorProvider,
     HistoryProvider,
@@ -37,7 +36,7 @@ from infra.db.mongodb import DocumentStore
 
 class ContextService:
     DEFAULT_FIELDS = ["system", "search", "memory", "write_agent", "human"]
-    PROTECTED_CONTEXT_IDS = {"default_executor", "default_planner", "default_step", "default_coding"}
+    PROTECTED_CONTEXT_IDS = {"default_executor", "default_planner", "default_step"}
 
     def __init__(self, store: DocumentStore) -> None:
         self._store = store
@@ -45,7 +44,7 @@ class ContextService:
         self.ensure_default_contexts()
 
     def ensure_default_contexts(self) -> None:
-        for kind in ("executor", "planner", "step", "coding"):
+        for kind in ("executor", "planner", "step"):
             context_id = f"default_{kind}"
             if self._store.find_one("contexts", {"context_id": context_id}) is None:
                 self.create_context(
@@ -62,7 +61,6 @@ class ContextService:
                 {"provider_id": "state", "name": "执行状态", "params": []},
                 {"provider_id": "error", "name": "错误回灌(一次性)", "params": ["memory_field"]},
                 {"provider_id": "pinned_context", "name": "固定上下文(收藏)", "params": []},
-                {"provider_id": "artifact_protocol", "name": "内联产物协议", "params": []},
                 {"provider_id": "skill", "name": "召回技能", "params": ["memory_field", "strategy_config"]},
                 {"provider_id": "available_tools", "name": "可用工具", "params": ["available_fields", "available_tools"]},
                 {"provider_id": "history", "name": "对话历史", "params": ["memory_field", "strategy_config"]},
@@ -84,12 +82,11 @@ class ContextService:
                 "executor": self.default_template("executor"),
                 "planner": self.default_template("planner"),
                 "step": self.default_template("step"),
-                "coding": self.default_template("coding"),
             },
         }
 
     def default_template(self, kind: str) -> list[dict[str, Any]]:
-        memory_strategy = {"pipeline": [{"type": "full_history"}, {"type": "recency", "keep_last": 30}]}
+        memory_strategy = {"pipeline": [{"type": "full_history"}, {"type": "recency", "keep_last": 50}]}
         templates = {
             "executor": [
                 {"provider_id": "user_prompt", "enabled": True, "params": {}},
@@ -130,23 +127,6 @@ class ContextService:
             ],
             "step": [
                 {"provider_id": "plan_step_prompt", "enabled": True, "params": {}},
-            ],
-            # coding agent（Claude Code / Codex）由各自 CLI 自管工具循环，这里不注入
-            # state/error/available_tools/tool_output（会变成噪声）；只给：用户需求(含回复/引用)、
-            # 收藏固定上下文、内联产物协议、对话历史。
-            "coding": [
-                {"provider_id": "user_prompt", "enabled": True, "params": {}},
-                {"provider_id": "pinned_context", "enabled": True, "params": {}},
-                {"provider_id": "skill", "enabled": True, "params": {"memory_field": "skill", "strategy_config": {"pipeline": [{"type": "full_history"}]}}},
-                {"provider_id": "artifact_protocol", "enabled": True, "params": {}},
-                {
-                    "provider_id": "history",
-                    "enabled": True,
-                    "params": {
-                        "memory_field": "agent_history",
-                        "strategy_config": {"pipeline": [{"type": "full_history"}, {"type": "recency", "keep_last": 35}]},
-                    },
-                },
             ],
         }
         if kind not in templates:
@@ -314,8 +294,6 @@ class ContextService:
             return StateProvider()
         if provider_id == "pinned_context":
             return PinnedContextProvider()
-        if provider_id == "artifact_protocol":
-            return ArtifactProtocolProvider()
         if provider_id == "skill":
             strat = params.get("strategy_config")
             return SkillProvider(
@@ -364,8 +342,6 @@ class ContextService:
             provider_id = "state"
         elif isinstance(provider, PinnedContextProvider):
             provider_id = "pinned_context"
-        elif isinstance(provider, ArtifactProtocolProvider):
-            provider_id = "artifact_protocol"
         elif isinstance(provider, SkillProvider):
             provider_id = "skill"
             params = self._memory_provider_params(provider)
