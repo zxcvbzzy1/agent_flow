@@ -11,6 +11,7 @@ from domain.agent_base import AgentBase
 from domain.context.context import ContextEngine
 from domain.event import Event, EventBusPort
 from domain.run_context import current_run_id, current_execution_id
+from domain.memory.long.models import MemoryScope
 from infra.db.mongodb import DocumentStore
 
 from application.services.agents import AgentFactoryService
@@ -19,6 +20,7 @@ from application.events.bridge import FrontendEventBridge
 from application.events.schemas import step_failed_payload
 from application.services.events import EventStreamService
 from application.services.run_state import RunStateService
+from application.services.memory_runtime import RunMemoryCoordinator
 
 
 class RecordingEventBus(EventBusPort):
@@ -113,6 +115,7 @@ class RunOrchestrationService:
         context_service: ContextService,
         streams: EventStreamService,
         frontend_bridge: FrontendEventBridge,
+        long_memory=None,
     ) -> None:
         self._store = store
         self._agents = agent_service
@@ -121,7 +124,10 @@ class RunOrchestrationService:
         self._frontend_bridge = frontend_bridge
         self._tasks: dict[str, asyncio.Task] = {}
         self.runtime = streams.runtime
-        self.states = RunStateService(store, self.runtime)
+        self.long_memory = long_memory
+        self.memory_coordinator = RunMemoryCoordinator(long_memory, store, streams)
+        self.states = RunStateService(store, self.runtime, long_memory=long_memory,
+                                      memory_coordinator=self.memory_coordinator)
         self.runtime.on_orphan = self.handle_orphan
 
     async def handle_orphan(self, state):
@@ -132,8 +138,7 @@ class RunOrchestrationService:
             await self.runtime.delete_runtime(state["run_id"])
             return
         if record.get("status") not in {"pending", "running"}:
-            await self.runtime.put_state("orchestration", state["run_id"],
-                                         {"status": record["status"], "cancel_requested": False})
+            await self.states.finish_control(state["run_id"])
             return
         await self._mark_run_cancelled(state, "执行进程失联，运行中断", True)
         for item in await self.runtime.confirmations(state["target_id"]):
@@ -159,6 +164,8 @@ class RunOrchestrationService:
         scope_id: str | None = None,
         im_conversation_id: str = "",
         source_message_id: str = "",
+        memory_scope: MemoryScope | None = None,
+        user_question: str | None = None,
     ) -> dict[str, Any]:
         run_id = str(uuid.uuid4())
         if mode not in {"react", "plan"}:
@@ -183,6 +190,9 @@ class RunOrchestrationService:
 
         record = {
             "run_id": run_id,
+            "memory_scope": (MemoryScope(memory_scope.user_id, memory_scope.room_id or "standalone",
+                memory_scope.conversation_id or conversation_id or run_id).to_dict() if memory_scope else None),
+            "user_question": prompt if user_question is None else user_question,
             "kind": "orchestration",
             "scope_id": scope_id or run_id,
             "im_conversation_id": im_conversation_id,
@@ -277,6 +287,7 @@ class RunOrchestrationService:
         # 避免并发 run 下 agent_id -> run_id 全局映射 last-writer-wins 串扰。finally 中 reset。
         token = current_run_id.set(run_id)
         try:
+            record["long_term_memory"] = await self.memory_coordinator.prepare(record)
             if record.get("mode") == "react":
                 await self._execute_react_run(record)
             else:
@@ -308,6 +319,7 @@ class RunOrchestrationService:
         self._frontend_bridge.register_agent_run(executor.id, run_id)
         self._load_conversation_history(executor, record)
         self._apply_pinned_context(executor, record)
+        await self._apply_long_memory(executor, record)
         await self._streams.publish(
             run_id,
             "workflow.started",
@@ -339,6 +351,7 @@ class RunOrchestrationService:
         self._frontend_bridge.register_agent_run(planner.id, run_id)
         self._load_conversation_history(planner, record)
         self._apply_pinned_context(planner, record)
+        await self._apply_long_memory(planner, record)
 
         executors: dict[str, AgentBase] = {}
         for executor_id in record["executor_agent_ids"]:
@@ -348,6 +361,7 @@ class RunOrchestrationService:
                 raise TypeError(f"executor_agent_id 不是执行型 agent: {executor_id}")
             self._frontend_bridge.register_agent_run(executor.id, run_id)
             self._apply_pinned_context(executor, record)
+            await self._apply_long_memory(executor, record)
             executors[executor_id] = executor
 
         step_context = self._contexts.get_engine(record["context_id"])
@@ -359,7 +373,7 @@ class RunOrchestrationService:
             executors=executors,
             step_context_engine=step_context,
             event_bus=RecordingEventBus(run_id, self._streams),
-            state=OrchestratorState(),
+            state=OrchestratorState(long_term_memory=list(record.get("long_term_memory") or [])),
             max_replan_rounds=record["max_replan_rounds"],
             run_id=run_id,
             streams=self._streams,
@@ -377,6 +391,9 @@ class RunOrchestrationService:
         await self._streams.publish(run_id, "workflow.finished", {
             "run_id": run_id, "final": orchestrator.state.final,
             "finish_reason": orchestrator.state.finish_reason})
+
+    async def _apply_long_memory(self, agent: AgentBase, record: dict[str, Any]) -> None:
+        await self.memory_coordinator.inject(agent, record.get("long_term_memory") or [], record["run_id"])
 
     def _apply_pinned_context(self, agent: AgentBase, record: dict[str, Any]) -> None:
         """将收藏上下文注入本次执行专属的 Agent。"""

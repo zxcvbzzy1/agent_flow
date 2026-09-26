@@ -4,6 +4,7 @@ from domain.agent_base import AgentBase
 from domain.agent.plan.providers import AvailableExecutorsProvider, ExecutorStatusProvider, PlanObservationProvider
 from domain.context.context import ContextEngine
 from domain.context.providers import *
+from domain.memory.long.providers import LongTermMemoryProvider
 from domain.context.strategy import FullHistoryStrategy, LatestOnlyStrategy, RecencyStrategy, TokenBudgetStrategy
 from domain.event import ToolEventFactory
 from domain.memory.short.default_short_term_memory import DefaultShortTermMemory
@@ -36,6 +37,7 @@ memory2 = DefaultShortTermMemory(["tool_respond", "agent_history", "error"])
 # ReACT执行者上下文提供类
 providers = [
     UserPromptProvider(),
+    LongTermMemoryProvider(),
     StateProvider(),
     ErrorProvider(memory),
     AvailableToolsProvider(["system", "search", "memory", "write_agent"]),
@@ -46,6 +48,7 @@ providers = [
 # PlanAgent编排上下文提供类
 plan_providers = [
     UserPromptProvider(),
+    LongTermMemoryProvider(),
     StateProvider(),
     ErrorProvider(memory2),
     AvailableExecutorsProvider(),

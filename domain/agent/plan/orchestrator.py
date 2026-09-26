@@ -21,6 +21,7 @@ class OrchestratorState:
     final: str = ""
     is_finished: bool = False
     finish_reason: str = ""
+    long_term_memory: list[dict] = field(default_factory=list)
 
     def to_context_dict(self) -> dict:
         state = {
@@ -30,6 +31,7 @@ class OrchestratorState:
             "final": self.final,
             "is_finished": self.is_finished,
             "finish_reason": self.finish_reason,
+            "long_term_memory": self.long_term_memory,
         }
         if self.current_step is not None:
             state["current_step"] = self.current_step

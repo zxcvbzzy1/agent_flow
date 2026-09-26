@@ -84,6 +84,14 @@ class DocumentStore:
     def delete_one(self, collection: str, query: dict[str, Any]) -> int:
         return int(self._db[collection].delete_one(query).deleted_count)
 
+    def update_operators(self, collection: str, query: dict[str, Any],
+                         operators: dict[str, Any], *, upsert: bool = False) -> dict[str, Any] | None:
+        """Atomic operator update for insert-only records and usage counters."""
+        return self._db[collection].find_one_and_update(
+            query, copy.deepcopy(operators), upsert=upsert,
+            return_document=ReturnDocument.AFTER, projection={"_id": False},
+        )
+
     def delete_many(self, collection: str, query: dict[str, Any]) -> int:
         return int(self._db[collection].delete_many(query).deleted_count)
 

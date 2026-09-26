@@ -18,6 +18,7 @@ from domain.runtime_hooks import (
 )
 from infra.config import factory, llm_client
 from infra.db.mongodb import DocumentStore
+from infra.memory.config import build_long_memory
 
 from api.core.config import settings
 
@@ -36,14 +37,16 @@ class ServiceContainer:
         self.tools = ToolRegistryService(self.store, self.root_dir)
         self.contexts = ContextService(self.store)
         self.agents = AgentFactoryService(self.store, self.contexts, llm_client, self.events)
+        self.long_memory = build_long_memory(self.store, self.root_dir / "store")
         self.runs = RunOrchestrationService(
             self.store,
             self.agents,
             self.contexts,
             self.events,
             self.frontend_bridge,
+            long_memory=self.long_memory,
         )
-        self.conversations = ConversationService(self.store, self.runtime)
+        self.conversations = ConversationService(self.store, self.runtime, long_memory=self.long_memory)
 
 
 @lru_cache(maxsize=1)

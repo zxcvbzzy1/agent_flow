@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -7,9 +8,10 @@ from infra.db.mongodb import DocumentStore
 
 
 class ConversationService:
-    def __init__(self, store: DocumentStore, runtime=None) -> None:
+    def __init__(self, store: DocumentStore, runtime=None, *, long_memory=None) -> None:
         self._store = store
         self.runtime = runtime
+        self.long_memory = long_memory
 
     def create_conversation(
         self,
@@ -52,12 +54,16 @@ class ConversationService:
         for run_id in run_ids:
             if self.runtime:
                 from application.services.run_state import RunStateService
-                deleted = await RunStateService(self._store, self.runtime).delete(run_id)
+                deleted = await RunStateService(self._store, self.runtime, long_memory=self.long_memory).delete(run_id)
                 stats["runs"] += deleted["runs"]
                 stats["events"] += deleted["events"]
             else:
+                if self.long_memory is not None:
+                    await asyncio.to_thread(self.long_memory.delete_sources, run_id=run_id)
                 stats["runs"] += self._store.delete_many("runs", {"run_id": run_id})
                 stats["events"] += self._store.delete_many("events", {"run_id": run_id})
+        if self.long_memory is not None:
+            await asyncio.to_thread(self.long_memory.delete_sources, conversation_id=conversation_id)
         stats["conversations"] = self._store.delete_one("conversations", {"conversation_id": conversation_id})
         stats["messages"] = self._store.delete_many("messages", {"conversation_id": conversation_id})
         return {"deleted": True, "conversation_id": conversation_id, "stats": stats}

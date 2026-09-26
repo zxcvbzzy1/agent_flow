@@ -5,8 +5,10 @@ from redis.exceptions import RedisError
 
 
 class RunStateService:
-    def __init__(self, store, runtime):
+    def __init__(self, store, runtime, *, long_memory=None, memory_coordinator=None):
         self.store, self.runtime = store, runtime
+        self.long_memory = long_memory
+        self.memory_coordinator = memory_coordinator
 
     async def get(self, run_id):
         record = await self.runtime.cache.get(run_id, lambda: self.store.find_one('runs', {'run_id': run_id}))
@@ -51,6 +53,8 @@ class RunStateService:
                     break
             else:
                 raise ValueError('执行仍在停止中，请稍后重试删除')
+        if self.long_memory is not None:
+            await asyncio.to_thread(self.long_memory.delete_sources, run_id=run_id)
         event_count = await self.runtime.journal.delete('run', run_id)
         scope_id = record.get('scope_id') or run_id
         scope_count = await self.runtime.remove_projected(scope_id, lambda event: event.get('run_id') == run_id)
@@ -67,6 +71,12 @@ class RunStateService:
         record = self.store.find_one('runs', {'run_id': run_id})
         if not record or record.get('status') not in {'finished', 'failed', 'cancelled'}:
             return
+        if self.memory_coordinator is not None:
+            await self.memory_coordinator.archive(record)
+            try:
+                await self.runtime.cache.invalidate(run_id)
+            except Exception:
+                logging.getLogger(__name__).exception('Memory status cache invalidation failed: %s', run_id)
         try:
             await asyncio.wait_for(self.runtime.put_state(record.get('kind', 'orchestration'), run_id,
                                    {'status': record['status'], 'cancel_requested': False}), 1)
