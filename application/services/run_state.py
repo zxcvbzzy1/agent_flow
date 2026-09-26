@@ -13,6 +13,8 @@ class RunStateService:
         if not record:
             return None
         # A cancellation request is a live control signal, not a business status.
+        if record.get('status') not in {'pending', 'running'}:
+            return {**record, 'cancel_requested': False}
         try:
             control = await asyncio.wait_for(self.runtime.get_state(record.get('kind', 'orchestration'), run_id), 0.5)
         except (RedisError, OSError, TimeoutError):
