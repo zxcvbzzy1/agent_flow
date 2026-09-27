@@ -37,15 +37,22 @@ class RecallResult:
         return asdict(self)
 
 
-def effective_status(block: dict, source: dict | None, now: float) -> str:
+def effective_status(block: dict, source: dict | None, now: float, *,
+                     sources: dict | None = None, completed_batches: set | None = None) -> str:
     """State shared by runtime retrieval and the IM management view."""
-    if block["status"] == "deleted" or (source and source.get("deleted_at") is not None):
+    evidence = [sources.get(sid) for sid in block.get("evidence_source_ids", [])] if sources is not None else []
+    if block["status"] == "deleted" or (source and source.get("deleted_at") is not None) or any(
+            s and s.get("deleted_at") is not None for s in evidence):
         return "deleted"
     if block["status"] != "active":
         return block["status"]
     if block.get("expires_at") is not None and block["expires_at"] <= now:
         return "expired"
     if not source or source.get("index_status") != "ready":
+        return "unavailable"
+    if any(not s or s.get("index_status") != "ready" for s in evidence):
+        return "unavailable"
+    if block.get("batch_id") and (completed_batches is None or block["batch_id"] not in completed_batches):
         return "unavailable"
     return "active"
 

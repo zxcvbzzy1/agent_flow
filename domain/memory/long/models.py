@@ -76,6 +76,9 @@ class MemoryBlock:
     last_used_at: float | None = None
     derived_from_block_ids: list[str] = field(default_factory=list)
     superseded_by_block_ids: list[str] = field(default_factory=list)
+    batch_id: str | None = None
+    evidence_refs: list[dict] = field(default_factory=list)
+    evidence_source_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -18,11 +18,18 @@ class MongoMemoryRepository:
             store.ensure_index(BLOCKS, [("user_id", 1), ("status", 1), ("expires_at", 1)])
             store.ensure_index(BLOCKS, [("source_id", 1)])
             store.ensure_index(BLOCKS, [("derived_from_block_ids", 1)])
+            store.ensure_index(BLOCKS, [("evidence_source_ids", 1)])
+            store.ensure_index(BLOCKS, [("batch_id", 1)])
+            store.ensure_index(SOURCES, [("index_status", 1), ("user_id", 1), ("created_at", 1)])
             for name in ("run_id", "message_id", "conversation_id", "room_id"):
                 store.ensure_index(SOURCES, [(name, 1)])
 
     def get_source(self, source_id: str) -> dict | None:
         return self.store.find_one(SOURCES, {"source_id": source_id})
+
+    def completed_batches(self, user_id: str) -> set[str]:
+        return {b["batch_id"] for b in self.store.find_many("long_memory_batches",
+                {"user_id": user_id, "status": "completed"}, projection={"steps": False})}
 
     def sources(self, query: dict) -> list[dict]:
         return self.store.find_many(SOURCES, query)

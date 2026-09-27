@@ -10,6 +10,7 @@ class SourceFiles(Protocol):
 
 
 class MemoryRepository(Protocol):
+    def completed_batches(self, user_id: str) -> set[str]: ...
     def get_source(self, source_id: str) -> dict | None: ...
     def sources(self, query: dict) -> list[dict]: ...
     def put_source(self, document: dict) -> dict: ...
@@ -34,7 +35,7 @@ class RoutingDecision:
 
 
 class MemoryRouter(Protocol):
-    """Future model routing seam; no JEV/model dependency in the memory pipeline."""
+    """Synchronous rule-mode routing; async batch classifiers use processing.py."""
     def route(self, source: dict, candidate: dict) -> RoutingDecision: ...
 
 

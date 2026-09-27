@@ -32,7 +32,7 @@ plan agent构建，基于agent基类构建计划型agent
 - `domain/agent/`：具体 Agent 模式，包括 ReACT 执行型 Agent、PlanAgent 能力对象、多 Agent 编排者。
 - `infra/tool/`：工具声明、工具事件绑定、工具具体实现。
 
-本模块的导入方向为 `application → infra → domain`，应用层也可直接使用领域层。`domain` 不导入另外两层，`infra` 不导入 `application`；`api` 是三层外的 HTTP 入口。长期记忆的 `build_long_memory()` 位于 `application/services/long_memory.py`，`infra/memory/` 仅包含存储适配器。
+本模块的导入方向为 `application → infra → domain`，应用层也可直接使用领域层。`domain` 不导入另外两层，`infra` 不导入 `application`；`api` 是三层外的 HTTP 入口。长期记忆的 `build_long_memory()` 位于 `application/services/long_memory.py`，`infra/memory/` 包含存储、JEV SDK 和提取 LLM 适配器；`application/services/memory_processing.py` 编排持久化批次和后台恢复。新 run 默认 JEV 处理，不转换已有记忆；配置和环境变量见[长期记忆说明](domain/memory/long/README.md)。
 
 
 ## 工具注入与事件调用流程

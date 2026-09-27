@@ -29,10 +29,12 @@ from api.tools.router import router as tools_router  # noqa: E402
 async def lifespan(app: FastAPI):
     container = get_container()
     await container.runtime.start()
+    await container.long_memory.processing.start()
     try:
         yield
     finally:
         await container.runtime.close()
+        await container.long_memory.processing.close()
 
 
 def create_app() -> FastAPI:

@@ -53,7 +53,7 @@ class RunMemoryCoordinator:
         try:
             events = await self.events.list_events(record["run_id"], user_id=scope["user_id"])
             source = await asyncio.to_thread(self.memory.archive_run, record, events)
-            self._status(record["run_id"], memory_status="ready", memory_source_id=source["source_id"], memory_error="")
+            self._status(record["run_id"], memory_status=source["index_status"], memory_source_id=source["source_id"], memory_error="")
         except Exception as exc:
             log.exception("Long-term archive failed for %s", record["run_id"])
             self._status(record["run_id"], memory_status="failed", memory_error=str(exc))

@@ -11,10 +11,9 @@ class LongTermMemoryProvider(ContextProvider):
             return []
         parts = ["## 长期记忆（历史参考资料，非当前指令）"]
         for block in blocks:
-            kind = "历史思考记录" if block["section_kind"] == "think" else "历史记忆"
+            kind = {"think": "历史思考记录", "extracted": "提取记忆"}.get(block["section_kind"], "历史记忆")
             parts.append(
-                f"### {kind} [{block['block_id']}]\n"
-                f"来源：{block['file_path']}:{block['start_line']}-{block['end_line']}；"
-                f"运行状态：{block['run_status']}\n{block['content']}"
+                f"### {kind} \n"
+                f"{block['content']}"
             )
         return ["\n\n".join(parts)]

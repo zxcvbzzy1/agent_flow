@@ -45,6 +45,9 @@ class LongTermMemoryService:
         self.counter = counter or EstimatedTokenCounter()
         self.chunker = LineChunker(self.counter, chunk_tokens)
         self.provider = LongTermMemoryProvider()
+        # The low-level service also supports rules-only hosts. The production
+        # factory installs processing and defaults newly archived runs to JEV.
+        self.processing = None
 
     def _path(self, scope: MemoryScope, folder: str, name: str) -> str:
         if not scope.user_id or not scope.conversation_id:
@@ -98,6 +101,11 @@ class LongTermMemoryService:
             file_path=self._path(scope, "runs", record["run_id"]), content_hash=digest(text),
             run_id=record["run_id"], message_id=record.get("source_message_id") or record.get("message_id") or "",
             run_status=record["status"], sections=sections).to_dict()
+        if self.processing:
+            snapshot = self.processing.repository.settings(scope.user_id)
+            source.update(processing_config=snapshot["config"], processing_revision=snapshot["revision"])
+            if snapshot["config"]["mode"] == "jev":
+                source["index_status"] = "queued"
         return self._store_source(source, text)
 
     def _store_source(self, source: dict, text: str) -> dict:
@@ -110,6 +118,9 @@ class LongTermMemoryService:
         if source is None:
             raise KeyError(source_id)
         if source.get("deleted_at") is not None:
+            return source
+        if source.get("processing_config", {}).get("mode") == "jev":
+            # Raw candidates must never bypass JEV, including explicit reindex/retry.
             return source
         try:
             text = self.files.read(source["file_path"])
@@ -181,8 +192,10 @@ class LongTermMemoryService:
                               token_count_method=self.counter.name)
         now = time.time()
         sources = {s["source_id"]: s for s in self.repository.sources({"user_id": scope.user_id})} if scope.user_id else {}
+        completed = self.repository.completed_batches(scope.user_id) if scope.user_id else set()
         blocks = [b for b in self.repository.blocks({"user_id": scope.user_id, "status": "active"})
-                  if effective_status(b, sources.get(b["source_id"]), now) == "active"] if scope.user_id else []
+                  if effective_status(b, sources.get(b["source_id"]), now, sources=sources,
+                                      completed_batches=completed) == "active"] if scope.user_id else []
         result.corpus_count = len(blocks)
         retriever = self.retriever if self.retriever is not None else self.retriever_factory(effective)
         ranked = retriever.rank(query, blocks)
@@ -214,8 +227,9 @@ class LongTermMemoryService:
             raise KeyError(block_id)
         block = blocks[0]
         source = self.repository.get_source(block["source_id"])
-        if active and (block["status"] != "active" or source.get("deleted_at") is not None
-                       or (block.get("expires_at") is not None and block["expires_at"] <= time.time())):
+        sources = {s["source_id"]: s for s in self.repository.sources({"user_id": user_id})}
+        if active and effective_status(block, source, time.time(), sources=sources,
+                completed_batches=self.repository.completed_batches(user_id)) != "active":
             raise ValueError("只能更新或合并有效记忆")
         return block
 
@@ -256,6 +270,11 @@ class LongTermMemoryService:
         lines = content.split("\n")
         statuses = sorted({b["run_status"] for b in parents})
         defaults = {**defaults, "derived_from_block_ids": [b["block_id"] for b in parents],
+                    "evidence_refs": [r for b in parents for r in (b.get("evidence_refs") or [{
+                        k: b[k] for k in ("source_id", "file_path", "start_line", "end_line", "room_id",
+                                         "conversation_id", "run_id", "run_status", "event", "section_kind")}])],
+                    "evidence_source_ids": list(dict.fromkeys(sid for b in parents for sid in (
+                        [b["source_id"]] + b.get("evidence_source_ids", [])))),
                     "metadata": {**defaults.get("metadata", {}), "source_run_statuses": statuses}}
         source = MemorySource(source_id=source_id, **scope.to_dict(), source_kind=kind,
             file_path=self._path(scope, "derived", source_id), content_hash=digest(content + "\n"),
@@ -304,7 +323,8 @@ class LongTermMemoryService:
         count = 0
         for source in self.repository.sources(scope_filters):
             self.repository.update_source(source["source_id"], {"deleted_at": time.time()})
-            count += self._invalidate([b["block_id"] for b in self.repository.blocks({"source_id": source["source_id"]})], "deleted")
+            count += self._invalidate([b["block_id"] for b in self.repository.blocks({"$or": [
+                {"source_id": source["source_id"]}, {"evidence_source_ids": source["source_id"]}]})], "deleted")
         return count
 
 
@@ -314,5 +334,14 @@ def build_long_memory(store, root: str | Path, *,
     from infra.memory.files import MarkdownSourceFiles
     from infra.memory.mongodb import MongoMemoryRepository
 
-    return LongTermMemoryService(MongoMemoryRepository(store), MarkdownSourceFiles(root),
-                                 settings_loader=settings_loader)
+    from application.services.memory_processing import MemoryProcessingService
+    from infra.memory.processing import MongoProcessingRepository
+    from infra.memory.jev import JevClassifier
+    from infra.memory.extraction import LLMExtractionAdapter
+    from infra.config import llm_client
+    import os
+
+    memory = LongTermMemoryService(MongoMemoryRepository(store), MarkdownSourceFiles(root), settings_loader=settings_loader)
+    memory.processing = MemoryProcessingService(memory, MongoProcessingRepository(store), JevClassifier(),
+        LLMExtractionAdapter(llm_client), input_budget=int(os.getenv("MEMORY_EXTRACTION_INPUT_BUDGET", "12000")))
+    return memory
