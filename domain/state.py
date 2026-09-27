@@ -123,6 +123,7 @@ class Agent_state():
             "session_id":    session_id,
             "retry":         0,
             "is_finished":   False,
+            "long_term_memory":  [],
             
         }
         self._version:int = 0

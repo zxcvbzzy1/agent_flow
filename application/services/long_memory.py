@@ -5,13 +5,15 @@ import hashlib
 import json
 import time
 import uuid
+from pathlib import Path
+from typing import Callable
 from urllib.parse import quote
 
 from domain.memory.long.chunking import EstimatedTokenCounter, LineChunker
 from domain.memory.long.models import MemoryBlock, MemoryScope, MemorySource
 from domain.memory.long.ports import AcceptAllRouter, MemoryRepository, MemoryRetriever, MemoryRouter, SourceFiles, TokenCounter
 from domain.memory.long.providers import LongTermMemoryProvider
-from domain.memory.long.retrieval import BM25Retriever
+from domain.memory.long.retrieval import BM25Retriever, RecallOptions, RecallResult, effective_status
 
 _UNSET = object()
 
@@ -32,10 +34,14 @@ def component(value: str) -> str:
 class LongTermMemoryService:
     def __init__(self, repository: MemoryRepository, files: SourceFiles, *,
                  router: MemoryRouter | None = None, retriever: MemoryRetriever | None = None,
-                 counter: TokenCounter | None = None, chunk_tokens: int = 1000):
+                 counter: TokenCounter | None = None, chunk_tokens: int = 1000,
+                 retriever_factory: Callable[[RecallOptions], MemoryRetriever] | None = None,
+                 settings_loader: Callable[[str], dict | None] | None = None):
         self.repository, self.files = repository, files
         self.router = router or AcceptAllRouter()
-        self.retriever = retriever or BM25Retriever()
+        self.retriever = retriever
+        self.retriever_factory = retriever_factory or (lambda config: BM25Retriever(config.k1, config.b))
+        self.settings_loader = settings_loader
         self.counter = counter or EstimatedTokenCounter()
         self.chunker = LineChunker(self.counter, chunk_tokens)
         self.provider = LongTermMemoryProvider()
@@ -149,26 +155,58 @@ class LongTermMemoryService:
             raise
         return self.repository.get_source(source_id)
 
-    def recall(self, scope: MemoryScope, query: str, *, run_id: str, limit: int = 6,
-               token_budget: int = 4000, record_usage: bool = True) -> list[dict]:
-        if not scope.user_id or limit <= 0 or token_budget <= 0:
+    def get_recall_options(self, user_id: str) -> RecallOptions:
+        settings = self.settings_loader(user_id) if user_id and self.settings_loader else None
+        return RecallOptions(**(settings or {}))
+
+    def recall(self, scope: MemoryScope, query: str, *, run_id: str, limit: int | None = None,
+               token_budget: int | None = None, record_usage: bool = True,
+               config: RecallOptions | None = None) -> list[dict]:
+        if not scope.user_id or (limit is not None and limit <= 0) or (token_budget is not None and token_budget <= 0):
             return []
-        now = time.time()
-        source_ids = {s["source_id"] for s in self.repository.sources({"user_id": scope.user_id})
-                      if s.get("deleted_at") is None and s["index_status"] == "ready"}
-        blocks = [b for b in self.repository.blocks({"user_id": scope.user_id, "status": "active"})
-                  if b["source_id"] in source_ids and (b.get("expires_at") is None or b["expires_at"] > now)]
-        selected = []
-        for block in self.retriever.rank(query, blocks):
-            candidate = selected + [block]
-            rendered = "\n\n".join(self.provider.get({"long_term_memory": candidate}))
-            if self.counter.count(rendered) <= token_budget:
-                selected = candidate
-                if len(selected) >= limit:
-                    break
+        result = self.recall_result(scope, query, config=config, limit=limit, token_budget=token_budget)
         if run_id and record_usage:
-            self.repository.mark_used([b["block_id"] for b in selected], run_id)
-        return selected
+            self.repository.mark_used([b["block_id"] for b in result.selected], run_id)
+        return result.selected
+
+    def recall_result(self, scope: MemoryScope, query: str, *, config: RecallOptions | None = None,
+                      limit: int | None = None, token_budget: int | None = None) -> RecallResult:
+        """Pure read path shared by previews and runs; never accounts usage."""
+        effective = config or self.get_recall_options(scope.user_id)
+        # Legacy internal limit/budget arguments remain supported. HTTP settings
+        # and IM preview drafts are validated before being passed in as options.
+        selection_limit = effective.limit if limit is None else limit
+        budget = effective.token_budget if token_budget is None else token_budget
+        result = RecallResult(config={**effective.to_dict(), "limit": selection_limit, "token_budget": budget},
+                              token_count_method=self.counter.name)
+        now = time.time()
+        sources = {s["source_id"]: s for s in self.repository.sources({"user_id": scope.user_id})} if scope.user_id else {}
+        blocks = [b for b in self.repository.blocks({"user_id": scope.user_id, "status": "active"})
+                  if effective_status(b, sources.get(b["source_id"]), now) == "active"] if scope.user_id else []
+        result.corpus_count = len(blocks)
+        retriever = self.retriever if self.retriever is not None else self.retriever_factory(effective)
+        ranked = retriever.rank(query, blocks)
+        result.matched_count = len(ranked)
+        result.diagnostics_truncated = len(ranked) > 100
+        for rank, block in enumerate(ranked, 1):
+            candidate = result.selected + [block]
+            rendered = "\n\n".join(self.provider.get({"long_term_memory": candidate}))
+            if len(result.selected) >= selection_limit:
+                reason = "limit"
+            elif self.counter.count(rendered) > budget:
+                reason = "token_budget"
+            else:
+                reason = "selected"
+                result.selected.append({**block, "rank": rank})
+                result.context = rendered
+            if rank <= 100:
+                result.diagnostics.append({**{key: block[key] for key in (
+                    "block_id", "score", "file_path", "start_line", "end_line", "token_count")},
+                    "rank": rank, "reason": reason, "summary": block["content"][:240]})
+        result.token_count = self.counter.count(result.context)
+        if not result.selected:
+            result.empty_reason = "no_memory" if not blocks else "no_match" if not ranked else "token_budget"
+        return result
 
     def _owned_block(self, user_id: str, block_id: str, *, active: bool = False) -> dict:
         blocks = self.repository.blocks({"user_id": user_id, "block_id": block_id})
@@ -268,3 +306,13 @@ class LongTermMemoryService:
             self.repository.update_source(source["source_id"], {"deleted_at": time.time()})
             count += self._invalidate([b["block_id"] for b in self.repository.blocks({"source_id": source["source_id"]})], "deleted")
         return count
+
+
+def build_long_memory(store, root: str | Path, *,
+                      settings_loader: Callable[[str], dict | None] | None = None) -> LongTermMemoryService:
+    """Assemble the memory service for the native API or IM bridge."""
+    from infra.memory.files import MarkdownSourceFiles
+    from infra.memory.mongodb import MongoMemoryRepository
+
+    return LongTermMemoryService(MongoMemoryRepository(store), MarkdownSourceFiles(root),
+                                 settings_loader=settings_loader)

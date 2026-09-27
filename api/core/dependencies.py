@@ -9,6 +9,7 @@ from application.services.agents import AgentFactoryService
 from application.services.contexts import ContextService
 from application.services.conversations import ConversationService
 from application.services.events import EventStreamService
+from application.services.long_memory import build_long_memory
 from application.services.runs import RunOrchestrationService
 from application.services.tools import ToolRegistryService
 from domain.runtime_hooks import (
@@ -18,7 +19,6 @@ from domain.runtime_hooks import (
 )
 from infra.config import factory, llm_client
 from infra.db.mongodb import DocumentStore
-from infra.memory.config import build_long_memory
 
 from api.core.config import settings
 

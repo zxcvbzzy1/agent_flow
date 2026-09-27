@@ -27,9 +27,12 @@ plan agent构建，基于agent基类构建计划型agent
 - `api/`：FastAPI HTTP/SSE 适配层，负责路由、CORS、依赖注入和对外接口。接口详情见 [FastAPI API 文档](api/README.md)。
 - `application/`：应用层用例服务，负责工具注册、ContextEngine 管理、Agent 工厂、Run 编排、会话消息、前端事件桥接。
 - `domain/`：领域模型与抽象能力，包括 Agent、Tool、Event、Context、State、Memory。
-- `infra/`：基础设施实现，包括事件总线、LLM 客户端、工具实现、配置装配。
+- `infra/`：基础设施实现，包括事件总线、LLM 客户端、工具实现和存储适配器。
+- `tests/`：本模块 Python 测试，包括分层依赖检查。
 - `domain/agent/`：具体 Agent 模式，包括 ReACT 执行型 Agent、PlanAgent 能力对象、多 Agent 编排者。
 - `infra/tool/`：工具声明、工具事件绑定、工具具体实现。
+
+本模块的导入方向为 `application → infra → domain`，应用层也可直接使用领域层。`domain` 不导入另外两层，`infra` 不导入 `application`；`api` 是三层外的 HTTP 入口。长期记忆的 `build_long_memory()` 位于 `application/services/long_memory.py`，`infra/memory/` 仅包含存储适配器。
 
 
 ## 工具注入与事件调用流程

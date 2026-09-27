@@ -4,6 +4,50 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from dataclasses import asdict, dataclass, field
+
+
+@dataclass(frozen=True)
+class RecallOptions:
+    """Parameters used by one agent run's retrieval, supplied by its host."""
+
+    limit: int = 6
+    token_budget: int = 4000
+    k1: float = 1.5
+    b: float = 0.75
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class RecallResult:
+    config: dict
+    corpus_count: int = 0
+    matched_count: int = 0
+    selected: list[dict] = field(default_factory=list)
+    diagnostics: list[dict] = field(default_factory=list)
+    diagnostics_truncated: bool = False
+    context: str = ""
+    token_count: int = 0
+    token_count_method: str = ""
+    empty_reason: str | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def effective_status(block: dict, source: dict | None, now: float) -> str:
+    """State shared by runtime retrieval and the IM management view."""
+    if block["status"] == "deleted" or (source and source.get("deleted_at") is not None):
+        return "deleted"
+    if block["status"] != "active":
+        return block["status"]
+    if block.get("expires_at") is not None and block["expires_at"] <= now:
+        return "expired"
+    if not source or source.get("index_status") != "ready":
+        return "unavailable"
+    return "active"
 
 
 def tokenize(text: str) -> list[str]:

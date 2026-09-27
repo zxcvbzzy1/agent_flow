@@ -45,13 +45,19 @@ class DocumentStore:
         self, collection: str, query: dict[str, Any] | None = None,
         sort: list[tuple[str, int]] | None = None, limit: int | None = None,
         projection: dict[str, Any] | None = None,
+        skip: int = 0,
     ) -> list[dict[str, Any]]:
         cursor = self._db[collection].find(query or {}, {**(projection or {}), "_id": False})
         if sort:
             cursor = cursor.sort(sort)
+        if skip:
+            cursor = cursor.skip(skip)
         if limit:
             cursor = cursor.limit(limit)
         return list(cursor)
+
+    def count(self, collection: str, query: dict[str, Any]) -> int:
+        return self._db[collection].count_documents(query)
 
     def upsert_events(self, collection: str, events: list[dict]) -> set[str]:
         """Return only positively acknowledged IDs; unknown outcomes are retried."""
