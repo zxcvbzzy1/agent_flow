@@ -87,7 +87,7 @@ class AgentBase(ABC):
         # planner 等不走 start() 的 Agent 天然不触发。子类可设 skill_recall_enabled=False 关闭。
         self.skill_recall_enabled   = True
         self.skill_recall_k         = 3
-        self.skill_recall_threshold = 0.0
+        self.skill_recall_threshold = 0.0  # 原始 BM25 分数；0 表示有词项重合即召回
         AgentBase._instance_list[self.id] = self
 
     @classmethod

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -14,6 +15,12 @@ from domain.memory.long.models import MemoryBlock, MemoryScope, MemorySource
 from domain.memory.long.ports import AcceptAllRouter, MemoryRepository, MemoryRetriever, MemoryRouter, SourceFiles, TokenCounter
 from domain.memory.long.providers import LongTermMemoryProvider
 from domain.memory.long.retrieval import BM25Retriever, RecallOptions, RecallResult, effective_status
+
+from infra.memory.files import MarkdownSourceFiles
+from infra.memory.mongodb import MongoMemoryRepository
+from infra.memory.processing import MemoryProcessingRepository
+from infra.memory.jev import JevClassifier
+from infra.memory.extraction import LLMExtractionAdapter
 
 _UNSET = object()
 
@@ -329,19 +336,13 @@ class LongTermMemoryService:
 
 
 def build_long_memory(store, root: str | Path, *,
-                      settings_loader: Callable[[str], dict | None] | None = None) -> LongTermMemoryService:
+                      settings_loader: Callable[[str], dict | None] | None = None, runtime=None) -> LongTermMemoryService:
     """Assemble the memory service for the native API or IM bridge."""
-    from infra.memory.files import MarkdownSourceFiles
-    from infra.memory.mongodb import MongoMemoryRepository
-
+    # The processor uses digest/stable_id above; load it after this module is ready.
     from application.services.memory_processing import MemoryProcessingService
-    from infra.memory.processing import MongoProcessingRepository
-    from infra.memory.jev import JevClassifier
-    from infra.memory.extraction import LLMExtractionAdapter
     from infra.config import llm_client
-    import os
 
     memory = LongTermMemoryService(MongoMemoryRepository(store), MarkdownSourceFiles(root), settings_loader=settings_loader)
-    memory.processing = MemoryProcessingService(memory, MongoProcessingRepository(store), JevClassifier(),
+    memory.processing = MemoryProcessingService(memory, MemoryProcessingRepository(store, runtime=runtime), JevClassifier(),
         LLMExtractionAdapter(llm_client), input_budget=int(os.getenv("MEMORY_EXTRACTION_INPUT_BUDGET", "12000")))
     return memory

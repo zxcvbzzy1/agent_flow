@@ -2,9 +2,8 @@
 
 组成：
   Skill            一条可召回的技能记忆
-  Embedder         向量化接缝（默认词频，后续可换 RAG embedding）
-  SkillRegistry    存储 + 预计算向量
-  SkillRetriever   查询 -> 相关技能（可替换为 RAG 检索器）
+  SkillRegistry    存储（带 version，供检索器做索引失效）
+  SkillRetriever   查询 -> 相关技能（默认 BM25，见 domain.retrieval；可替换为 RAG 检索器）
   loader           从 agent_flow/skills/ 的 md 文件加载
 
 两层召回：
@@ -23,20 +22,15 @@ from domain.skill.loader import (
 from domain.skill.registry import SkillRegistry
 from domain.skill.retriever import (
     BaseSkillRetriever,
+    BM25SkillRetriever,
     SkillHit,
-    VectorSkillRetriever,
 )
 from domain.skill.skill import Skill
-from domain.skill.vectorizer import (
-    BagOfWordsEmbedder,
-    Embedder,
-    cosine_similarity,
-)
 from domain.runtime_hooks import register_skill_retriever
 
 # 进程内默认单例：注册表 + 检索器（后续可整体替换为 RAG 版本）
 default_registry = SkillRegistry()
-default_retriever = VectorSkillRetriever(default_registry)
+default_retriever = BM25SkillRetriever(default_registry)
 
 _bootstrapped = False
 
@@ -65,12 +59,9 @@ def bootstrap_skills(skills_dir=None, *, force: bool = False) -> BaseSkillRetrie
 
 __all__ = [
     "Skill",
-    "Embedder",
-    "BagOfWordsEmbedder",
-    "cosine_similarity",
     "SkillRegistry",
     "BaseSkillRetriever",
-    "VectorSkillRetriever",
+    "BM25SkillRetriever",
     "SkillHit",
     "load_skill_file",
     "load_skills_from_dir",

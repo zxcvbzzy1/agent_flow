@@ -38,7 +38,7 @@ class SkillRetrieverPort(Protocol):
     """Optional retriever for recalling skills (system recall + recall_skill tool).
 
     返回元素需带 .skill 与 .score（见 domain.skill.retriever.SkillHit）。
-    实现可以是简单向量匹配，也可以后续替换为 RAG 检索器。
+    默认实现为 BM25（score 为原始 BM25 分数），也可以后续替换为 RAG 检索器。
     """
 
     def retrieve(self, query: str, k: int = 5, threshold: float = 0.0) -> Any:

@@ -37,7 +37,7 @@ class ServiceContainer:
         self.tools = ToolRegistryService(self.store, self.root_dir)
         self.contexts = ContextService(self.store)
         self.agents = AgentFactoryService(self.store, self.contexts, llm_client, self.events)
-        self.long_memory = build_long_memory(self.store, self.root_dir / "store")
+        self.long_memory = build_long_memory(self.store, self.root_dir / "store", runtime=self.runtime)
         self.runs = RunOrchestrationService(
             self.store,
             self.agents,

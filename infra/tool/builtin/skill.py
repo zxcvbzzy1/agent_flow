@@ -1,6 +1,6 @@
 """recall_skill 工具：智能体主动召回技能（两层召回中的“工具召回”）。
 
-与系统检索召回共用 runtime_hooks 暴露的检索器（默认简单向量匹配，可换 RAG）。
+与系统检索召回共用 runtime_hooks 暴露的检索器（默认 BM25，可换 RAG）。
 命中的技能会：1) 作为工具返回直接给本轮模型看到；2) 并入 agent.states["skills"]，
 经 SkillProvider 在后续轮次持续注入上下文。
 """

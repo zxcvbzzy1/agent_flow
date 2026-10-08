@@ -50,7 +50,7 @@ await bridge.runs.states.finish_control(run_id)
 - 源文档保存分段行号，不通过重新解析用户 Markdown 推断边界；正常分块约 1,000 个估算 token，无重叠，超长单行完整保留。
 - `TokenCounter` 默认 `cjk-char-latin-4-v1`：中文按字符、其余内容按每 4 字符估算，结果不是模型 tokenizer 的精确 token 数。
 - `rules` 模式的 `MemoryRouter` 默认全部接纳且标记 `unclassified`，接口返回是否收录、类型、标签、过期时间。生产组装默认启用 JEV，底层 `LongTermMemoryService` 可单独用于规则模式和测试。
-- `MemoryRetriever` 默认 BM25，`k1=1.5`、`b=0.75`，非负 IDF。英文按小写词项，中文按连续片段单字和双字词项；只在当前用户有效块中计算语料统计。默认最多 6 块、格式化后约 4,000 token，无匹配则为空。
+- `MemoryRetriever` 默认 BM25（`BM25Retriever` 是共享 `domain/retrieval/` 中 `BM25Index` 与 `tokenize` 的记忆块适配，技能召回复用同一实现），`k1=1.5`、`b=0.75`，非负 IDF。英文按小写词项，中文按连续片段单字和双字词项；只在当前用户有效块中计算语料统计。默认最多 6 块、格式化后约 4,000 token，无匹配则为空。
 - MongoDB 以内部 `_usage_run_ids` 数组实现每块每 run 的原子计数去重，不返回给召回方。本版采用用户有效块的内存 BM25 排序；大规模索引和使用记录压缩可后续替换仓储/检索实现。
 
 ## 记忆管理页面与接口
@@ -74,7 +74,7 @@ await bridge.runs.states.finish_control(run_id)
 | `GET /batches/{batch_id}` | 阶段、计数、失败原因、各类别进度和前 100 条候选诊断 |
 | `POST /batches/{batch_id}/retry` | 仅重试自己的失败批次，保留检查点；非失败状态返回 409，外部用户返回 404 |
 
-检索配置由 IM 后端保存到 `long_memory_settings`，`user_id` 唯一。默认 `limit=6`、`token_budget=4000`、`k1=1.5`、`b=0.75`；可设置范围分别为 1–50、128–32000、(0,5]、[0,1]。未配置用户直接读取系统默认值，不做历史迁移。
+检索与生成配置共用 MongoDB `long_memory_settings`，`user_id` 唯一；检索参数存于 `retrieval`，生成参数与版本存于 `processing.config`、`processing.revision`。两个接口分别原子更新自己的字段，不会覆盖另一类配置。默认检索参数 `limit=6`、`token_budget=4000`、`k1=1.5`、`b=0.75`；可设置范围分别为 1–50、128–32000、(0,5]、[0,1]。未配置用户读取系统默认值，不创建空配置。
 
 保存从当前用户**下一次 run**开始生效，已运行的任务继续使用启动时选中的记忆。ReAct、Plan 和私聊共用配置。页面的“恢复默认”只改变草稿，“测试召回”使用草稿，“保存配置”才影响实际运行。查询页筛选不会改变召回范围，同账号仍跨房间召回。
 
@@ -84,11 +84,11 @@ await bridge.runs.states.finish_control(run_id)
 
 ## JEV 分类和批量提取
 
-未配置账号的默认值为 `mode=jev`、`run_batch_size=1`、`noul_threshold=0.7`，分别可设置 `jev/rules`、1–100、0–1。生成配置单独保存在 `long_memory_processing_settings`；只对之后归档的 run 生效，已入队来源带有不可变配置快照和版本，旧记忆不迁移。
+未配置账号的默认值为 `mode=jev`、`run_batch_size=1`、`noul_threshold=0.7`，分别可设置 `jev/rules`、1–100、0–1。生成配置保存在统一设置文档的 `processing` 字段；只对之后归档的 run 生效，已入队来源带有不可变配置快照和版本，旧记忆不重提取。
 
 L3 归档不等待模型。新来源以 `index_status=queued` 持久化；后台按用户和配置版本组批，跨房间与会话。未满 N 个 run 时等待，最早来源满 24 小时自动触发。批次开始后 run 清单固定，后到的来源进入下一批。
 
-`long_memory_candidates` 保存规则分块及其 Noul、Choice 结果；Noul ≥ 阈值才分类，否则保留拒绝记录而不进入 L2。Choice 保存五类完整概率、整体置信度和响应实际模型版本，以最高概率选唯一主类别，低置信度不额外拒绝。候选保留 run 状态及 think 事件关联。**所有候选分类完成后才允许任何提取调用**。
+候选规则分块及 Noul、Choice 的中间结果保存在 Redis，批次终态后写入 MongoDB `long_memory_candidates` 作为最终诊断。Noul ≥ 阈值才分类，否则保留拒绝记录而不进入 L2。Choice 保存五类完整概率、整体置信度和响应实际模型版本，以最高概率选唯一主类别，低置信度不额外拒绝。候选保留 run 状态及 think 事件关联。**所有候选分类完成后才允许任何提取调用**。
 
 五类各有独立提示词和结构，定义于 `processing.py` 与 `prompts.py`：
 
@@ -102,22 +102,30 @@ L3 归档不等待模型。新来源以 `index_status=queued` 持久化；后台
 
 字段使用字符串或 null，未知内容不补全。每条输出必须有 `content`、`structure`、`tags` 和本类别子批中的 `evidence_candidate_ids`。代码校验后映射真实文件和行号，拒绝模型捏造的候选。提取明确区分事实、建议、假设和 think 猜测，允许返回空列表。
 
-按类别汇总，再按完整候选和服务端输入预算划分子批。子批结果通过 LLM 等价判断归并，同义内容合并证据，冲突和不同主体、项目、时间、条件分别保留。所有提取与归并检查点保存于 `long_memory_batches`，重试复用已完成结果。默认每个模型调用最多尝试 3 次；失败批次不自动重试，用户修复配置后显式重试。所有候选被拒绝会正常完成。
+按类别汇总，再按完整候选和服务端输入预算划分子批。子批结果通过 LLM 等价判断归并，同义内容合并证据，冲突和不同主体、项目、时间、条件分别保留。提取分组与归并检查点保存在 Redis，失败后保留以供重试复用。MongoDB `long_memory_batches` 仅保存完成/失败结果，不保存 owner、steps、extraction_groups 等运行态。默认每个模型调用最多尝试 3 次；失败批次不自动重试，用户修复配置后显式重试。所有候选被拒绝会正常完成。
 
 提取结果直接进入 L2，不创建派生 MD。新增 `section_kind=extracted`、`batch_id`、`evidence_refs` 和 `evidence_source_ids`；单来源字段兼容指向首条证据。元数据保存结构、模型/提示词版本和每条证据的独立 Noul/Choice 结果，不计算混合置信度。整批完成标记是发布开关，未完成输出不参与有效查询或召回。删除任何证据来源会整条停用，并沿手动更新、聚合关系继续传播；读取时再次检查全部证据状态，防止并发删除或重试恢复已停用内容。
 
-两个应用的 lifespan 在启动时扫描恢复，每 30 秒检查数量与等待时间。MongoDB 用户租约有效期 60 秒、15 秒续约，发布检查租约所有者；同账号不能由多个 worker 同时发布。应用退出取消后台任务并释放租约，下一次启动复用阶段结果。
+两个应用的 lifespan 在启动时扫描恢复，每 30 秒检查数量与等待时间。Redis 用户租约有效期 60 秒、15 秒续约；候选和检查点的每次写入都在同一个 Redis 事务中检查租约及批次 owner，失效 worker 不能续约、删除新租约或更新运行态。续约失败停止当前 worker。应用退出取消后台任务并释放租约，下一次启动复用 Redis 阶段结果。
 
-服务端依赖 `typesafe-sdk==0.7.1`、`pydantic>=2.12,<3`。JEV 使用 [官方 Python SDK](https://docs.typesafe.ai/sdk/python)。配置 `TYPESAFE_API_KEY`，可通过 `MEMORY_JEV_MODEL` 覆盖默认 `jev-latest`。提取默认复用现有 LLM，独立连接可设置 `MEMORY_EXTRACTION_MODEL`、`MEMORY_EXTRACTION_BASE_URL` 和 `MEMORY_EXTRACTION_API_KEY`。`MEMORY_EXTRACTION_INPUT_BUDGET` 默认 12000，按候选 JSON 估算，需为提示词和输出预留模型上下文；单候选超限不截断，而是记录错误等待调整预算。浏览器只看到模型名及凭据是否存在，不做自动连通性请求。
+### 存储边界与升级
+
+Redis key 前缀为 `REDIS_KEY_PREFIX:memory:{数据库命名空间}`，复用运行时的 Redis URL/prefix；命名空间与 MongoDB 部署及数据库绑定。`lease:<用户哈希>` 带 TTL，`batches` 和 `candidates:<batch_id>` 不自动过期。部署应启用 Redis AOF，未落库任务和失败重试检查点不能作为可随意清空的缓存。
+
+模型处理结束后，在 Redis 将结果冻结为 `finalizing`。此时不再修改检查点或重新提取，只重放固定结果：写入最终候选诊断与 L2 块 → 写入 MongoDB 终态批次标记 → 标记来源 ready → 确认后删除成功批次的 Redis 运行态。MongoDB 中断时保留待落库快照，后台自动续写；批次完成标记之前的 L2 块不可召回。失败批次保存终态诊断，但保留 Redis 检查点直到成功重试；显式重试增加 attempt，旧 worker 的迟到写入不能覆盖较新终态。
+
+升级时先停止旧版本 worker，再启动新版本，不能让 Mongo 租约和 Redis 租约两套 worker 并行运行。启动时合并旧配置：`long_memory_settings.config` → `retrieval`，旧 `long_memory_processing_settings` → `processing`，保留原 revision，确认目标保存后移除旧配置记录。旧 Mongo 租约记录在启动时清理。后台在获得 Redis 用户租约后，将旧非终态批次与候选复制到 Redis，确认后移除 Mongo 中间记录；旧完成/失败批次保留终态信息，移除运行态字段。迁移可重复执行，不重写 L3，也不修改已排队来源的配置快照。
+
+服务端依赖 `typesafe-sdk==0.7.1`、`pydantic>=2.12,<3`。JEV 使用 [官方 Python SDK](https://docs.typesafe.ai/sdk/python)。配置 `TYPESAFE_API_KEY`，可通过 `MEMORY_JEV_MODEL` 覆盖默认 `jev-latest`。SDK 调用封装在通用的 `infra/jev/JevClient`（`noul` / `choice` / 多问题 `ask`，提示词、类别和问题 key 由调用方传入，默认模型取 `JEV_MODEL`），可供召回判断等其他场景复用；`infra/memory/jev.py` 的 `JevClassifier` 只负责注入记忆的版本化提示词和 `memory` 问题 key。提取默认复用现有 LLM，独立连接可设置 `MEMORY_EXTRACTION_MODEL`、`MEMORY_EXTRACTION_BASE_URL` 和 `MEMORY_EXTRACTION_API_KEY`。`MEMORY_EXTRACTION_INPUT_BUDGET` 默认 12000，按候选 JSON 估算，需为提示词和输出预留模型上下文；单候选超限不截断，而是记录错误等待调整预算。浏览器只看到模型名及凭据是否存在，不做自动连通性请求。
 
 缺少凭据保留 L3 和失败批次，展示配置错误，不回退规则模式。`rules` 模式继续使用原有即时规则索引。切换模式不转换旧数据，也不改变已排队配置。
 
 ## 验证
 
 ```bash
-/Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pytest agent_flow/tests/test_long_memory.py agent_flow/tests/test_memory_processing.py agent_flow/tests/test_memory_model_adapters.py agent_flow/tests/test_layer_dependencies.py im_backend/tests/test_memory_management.py im_backend/tests/test_memory_processing_api.py -v
+/Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pytest agent_flow/tests/test_long_memory.py agent_flow/tests/test_memory_processing.py agent_flow/tests/test_memory_storage.py agent_flow/tests/test_memory_model_adapters.py agent_flow/tests/test_layer_dependencies.py im_backend/tests/test_memory_management.py im_backend/tests/test_memory_processing_api.py -v
 cd IM_front
 npm run build
 ```
 
-测试使用临时目录、内存持久层和伪事件/LLM，无需 MongoDB、Redis 或真实模型。不会回填历史 run。
+测试使用临时目录、`fakeredis`、`mongomock` 和伪事件/LLM，无需 MongoDB、Redis 服务或真实模型。测试环境需安装 `fakeredis>=2,<3`、`mongomock>=4,<5`；不会回填历史 run。

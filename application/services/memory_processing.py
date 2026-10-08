@@ -32,6 +32,7 @@ class MemoryProcessingService:
 
     async def start(self):
         if self._task is None or self._task.done():
+            await asyncio.to_thread(self.repository.start)
             self._task = asyncio.create_task(self._loop(), name="long-memory-processing")
 
     async def close(self):
@@ -40,6 +41,7 @@ class MemoryProcessingService:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
+        await asyncio.to_thread(self.repository.close)
 
     async def _loop(self):
         while True:
@@ -54,8 +56,9 @@ class MemoryProcessingService:
             now = time.time() if now is None else now
             sources = await asyncio.to_thread(self.memory.repository.sources, {"index_status": "queued"})
             batches = await asyncio.to_thread(self.repository.batches,
-                {"status": {"$in": ["waiting", "pending", "classifying", "extracting", "publishing"]}})
-            users = sorted({s["user_id"] for s in sources} | {b["user_id"] for b in batches})
+                {"status": {"$in": ["waiting", "pending", "classifying", "extracting", "publishing", "finalizing"]}})
+            legacy_users = await asyncio.to_thread(self.repository.legacy_users)
+            users = sorted({s["user_id"] for s in sources} | {b["user_id"] for b in batches} | legacy_users)
             # Separate user workers prevent one slow model request blocking everyone.
             semaphore = asyncio.Semaphore(self.concurrency)
 
@@ -71,10 +74,19 @@ class MemoryProcessingService:
         owner = str(uuid.uuid4())
         if not await asyncio.to_thread(self.repository.acquire, user, owner):
             return
+        worker = asyncio.current_task()
+        lease_lost = False
         async def heartbeat():
+            nonlocal lease_lost
             while True:
                 await asyncio.sleep(15)
-                if not await asyncio.to_thread(self.repository.renew, user, owner):
+                try:
+                    valid = await asyncio.to_thread(self.repository.renew, user, owner)
+                except Exception:
+                    valid = False
+                if not valid:
+                    lease_lost = True
+                    worker.cancel()
                     return
         pulse = asyncio.create_task(heartbeat())
         try:
@@ -83,19 +95,32 @@ class MemoryProcessingService:
                 if batch["status"] in {"completed", "failed", "waiting"}:
                     continue
                 await self._process(batch, owner)
+        except asyncio.CancelledError:
+            if not lease_lost:
+                raise
         finally:
             pulse.cancel()
             try:
                 with contextlib.suppress(asyncio.CancelledError):
                     await pulse
             finally:
-                await asyncio.to_thread(self.repository.release, user, owner)
+                try:
+                    await asyncio.to_thread(self.repository.release, user, owner)
+                except Exception:
+                    logger.warning("长期记忆租约释放失败，将由 Redis TTL 回收")
 
     def _form_batches(self, user, owner, now):
+        self.repository.migrate_legacy(user, owner)
         existing = self.repository.batches({"user_id": user})
         assigned = {sid for b in existing for sid in b["source_ids"]}
         queued = sorted(self.memory.repository.sources({"user_id": user, "index_status": "queued"}),
                         key=lambda s: (s["created_at"], s["source_id"]))
+        # A crash after the terminal marker but before updating source readiness
+        # must not leave successfully archived memories permanently unavailable.
+        completed_sources = {sid for b in existing if b["status"] == "completed" for sid in b["source_ids"]}
+        for source in queued:
+            if source["source_id"] in completed_sources:
+                self.memory.repository.update_source(source["source_id"], {"index_status": "ready", "error": ""})
         free = [s for s in queued if s["source_id"] not in assigned]
         waiting = [b for b in existing if b["status"] == "waiting"]
         for batch in waiting:
@@ -143,7 +168,7 @@ class MemoryProcessingService:
                     raise
                 await asyncio.sleep(.25 * 2 ** attempt)
 
-    def _candidates(self, batch):
+    def _candidates(self, batch, owner):
         for sid in batch["source_ids"]:
             source = self.memory.repository.get_source(sid)
             if not source or source["user_id"] != batch["user_id"]:
@@ -159,7 +184,7 @@ class MemoryProcessingService:
                         "message_id", "file_path", "created_at")},
                         "candidate_id": stable_id(f"candidate:{sid}:{index}"), "batch_id": batch["batch_id"],
                         "status": "pending"}
-                    self.repository.put_candidate(MemoryCandidate.model_validate(candidate).model_dump())
+                    self.repository.put_candidate(MemoryCandidate.model_validate(candidate).model_dump(), owner)
                     index += 1
         return self.repository.candidates(batch["batch_id"])
 
@@ -177,7 +202,7 @@ class MemoryProcessingService:
                         return NoulResult.model_validate(await self.classifier.noul(candidate)).model_dump()
                     candidate["noul_result"] = await self._retry_model(gate)
                     await asyncio.to_thread(self.repository.update_candidate, candidate["candidate_id"],
-                        {"noul_result": candidate["noul_result"]})
+                        {"noul_result": candidate["noul_result"]}, batch_id=batch["batch_id"], owner=owner)
                 if candidate["noul_result"]["noul"] < batch["config"]["noul_threshold"]:
                     changes = {"status": "rejected"}
                 else:
@@ -185,7 +210,8 @@ class MemoryProcessingService:
                         return ChoiceResult.model_validate(await self.classifier.choice(candidate)).validated()
                     choice = await self._retry_model(choose)
                     changes = {"status": "accepted", "choice_result": choice}
-                await asyncio.to_thread(self.repository.update_candidate, candidate["candidate_id"], changes)
+                await asyncio.to_thread(self.repository.update_candidate, candidate["candidate_id"], changes,
+                                       batch_id=batch["batch_id"], owner=owner)
                 candidate.update(changes)
         # return_exceptions waits for every in-flight classification before failure/retry.
         results = await asyncio.gather(*(classify(c) for c in candidates), return_exceptions=True)
@@ -266,8 +292,9 @@ class MemoryProcessingService:
             all_results.extend({**row, "category": category, "extraction_models": models} for row in merged)
         return all_results
 
-    def _publish_blocks(self, batch, candidates, results):
+    def _build_blocks(self, batch, candidates, results):
         by_id = {c["candidate_id"]: c for c in candidates}
+        blocks = []
         for index, row in enumerate(results):
             evidence = [by_id[cid] for cid in row["evidence_candidate_ids"]]
             refs = [{k: c[k] for k in ("candidate_id", "source_id", "file_path", "start_line", "end_line",
@@ -288,25 +315,29 @@ class MemoryProcessingService:
             # Deletion is also checked at read time across ALL evidence sources.
             if any(self.memory.repository.get_source(r["source_id"]).get("deleted_at") is not None for r in refs):
                 block.update(status="deleted", deleted_at=time.time())
-            self.memory.repository.put_block(block)
-        for sid in batch["source_ids"]:
-            self.memory.repository.update_source(sid, {"index_status": "ready", "error": ""})
+            blocks.append(block)
+        return blocks
 
     async def _process(self, batch, owner):
+        if batch["status"] == "finalizing":
+            await asyncio.to_thread(self.repository.finalize, batch["batch_id"], owner, self.memory.repository)
+            return
         try:
             await self._save(batch, owner, {"status": "classifying", "stage": "classification"})
-            candidates = await asyncio.to_thread(self._candidates, batch)
+            candidates = await asyncio.to_thread(self._candidates, batch, owner)
             await self._classify(batch, owner, candidates)
             # No extraction (including retries/merging) is reachable before the barrier above.
             results = await self._extract(batch, owner, candidates)
-            await self._save(batch, owner, {"status": "publishing", "stage": "publication"})
-            await asyncio.to_thread(self._publish_blocks, batch, candidates, results)
-            # One document is the publication marker; partial block inserts remain invisible.
-            await self._save(batch, owner, {"status": "completed", "stage": "completed", "error": "",
-                "output_count": len(results), "completed_at": time.time()})
+            blocks = await asyncio.to_thread(self._build_blocks, batch, candidates, results)
+            await self._save(batch, owner, {"status": "finalizing", "stage": "publication", "outcome": "completed",
+                "publication_blocks": blocks, "error": "", "output_count": len(results), "completed_at": time.time()})
         except ProcessingLeaseLost:
             return
         except Exception as exc:
             # SDK exception strings may include response bodies. Expose only safe diagnostics.
             error = str(exc)[:500] if isinstance(exc, ValueError) else f"{type(exc).__name__}；请检查服务端模型连接后重试"
-            await self._save(batch, owner, {"status": "failed", "error": error, "failed_stage": batch["stage"]})
+            await self._save(batch, owner, {"status": "finalizing", "outcome": "failed", "error": error,
+                "failed_stage": batch["stage"], "failed_at": time.time(), "publication_blocks": []})
+        # Storage failures leave the frozen outbox pending; never turn them into a
+        # model failure or rerun extraction. The next tick resumes acknowledgement.
+        await asyncio.to_thread(self.repository.finalize, batch["batch_id"], owner, self.memory.repository)

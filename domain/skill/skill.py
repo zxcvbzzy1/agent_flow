@@ -33,10 +33,10 @@ class Skill:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def index_text(self) -> str:
-        """用于向量化/匹配的文本。
+        """用于 BM25 检索的索引文本。
 
-        name/description/tags 是高信号字段，做加权（重复拼接）让标题与摘要
-        在简单词频匹配里权重更高，content 作为补充召回信号。
+        name/description/tags 是高信号字段，做加权（重复拼接）提高其词频，让标题与摘要
+        权重更高（BM25 的词频会被 k1 饱和，重复带来的增益递减），content 作为补充召回信号。
         """
         name = (self.name or "").strip()
         desc = (self.description or "").strip()
